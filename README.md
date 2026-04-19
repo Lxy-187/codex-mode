@@ -17,9 +17,9 @@ Features:
 - `config base-url`: show, set, or clear the saved API base URL
 - `config api-key`: show, set, prompt for, or clear the managed API key
 - `chatgpt`: switch back to saved ChatGPT auth snapshot
+- `chatgpt --relogin`: run a fresh ChatGPT login and refresh the saved snapshot
 - `api`: switch to API-key mode
-- `relogin chatgpt`: perform a fresh `codex login` and refresh the ChatGPT snapshot
-- `relogin api`: refresh API-key auth using the configured rules
+- `api --relogin`: refresh API-key auth using the configured rules
 - `update`: update from a local repo, with optional GitHub download fallback
 - `help`: show top-level help or help for one subcommand, for example `codex-mode help config`
 
@@ -77,11 +77,10 @@ Examples:
 ./codex-mode help api
 ./codex-mode help update
 ./codex-mode chatgpt
+./codex-mode chatgpt --relogin
 ./codex-mode api --base-url https://api.xairouter.com
-./codex-mode api --base-url https://api.xairouter.com --prompt
-./codex-mode relogin chatgpt
-./codex-mode relogin api
-./codex-mode relogin api --prompt
+./codex-mode api --relogin
+./codex-mode api --relogin --prompt
 ./codex-mode update --check
 ./codex-mode update
 ./codex-mode update --download
@@ -92,7 +91,7 @@ Windows direct usage without install:
 ```powershell
 .\codex-mode.ps1 status
 .\codex-mode.ps1 api --base-url https://api.xairouter.com
-.\codex-mode.ps1 relogin chatgpt
+.\codex-mode.ps1 chatgpt --relogin
 ```
 
 ```cmd
@@ -103,9 +102,9 @@ codex-mode.cmd api --base-url https://api.xairouter.com
 Notes:
 
 - After switching modes in Codex App, fully quit and reopen the app.
-- `chatgpt` restores a saved login snapshot. If that snapshot has expired, use `relogin chatgpt`.
-- `api` restores a saved API login snapshot if present. Use `relogin api` when the key changes.
-- `api` and `relogin api` do not prompt for an API key by default. Use `config api-key --prompt` to save one first, or pass `--prompt` explicitly.
+- `chatgpt` restores a saved login snapshot. If that snapshot has expired, use `chatgpt --relogin`.
+- `api` restores a saved API login snapshot if present. Use `api --relogin` when the key changes.
+- `api` and `api --relogin` do not prompt for an API key by default. Use `config api-key --prompt` to save one first, or pass `--prompt` explicitly.
 - `config api-key --set` saves to macOS Keychain by default on macOS, and to `~/.codex/auth-profiles/api.key` on Linux or Windows.
 - `config api-key --clear` only clears the selected managed store. It does not modify `OPENAI_API_KEY`.
 - If `codex` is not on PATH, set `CODEX_BIN` before running. Example on Windows PowerShell:
@@ -130,7 +129,7 @@ PowerShell:
 ```powershell
 $HOME\bin\codex-mode.ps1
 $HOME\bin\codex-mode.ps1 api --base-url https://api.xairouter.com
-$HOME\bin\codex-mode.ps1 relogin api
+$HOME\bin\codex-mode.ps1 api --relogin
 ```
 
 Command Prompt:
@@ -138,7 +137,7 @@ Command Prompt:
 ```cmd
 %USERPROFILE%\bin\codex-mode.cmd
 %USERPROFILE%\bin\codex-mode.cmd chatgpt
-%USERPROFILE%\bin\codex-mode.cmd relogin api --base-url https://api.xairouter.com
+%USERPROFILE%\bin\codex-mode.cmd api --relogin --base-url https://api.xairouter.com
 ```
 
 If you add `%USERPROFILE%\bin` to PATH, then on Windows you can run:

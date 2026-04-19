@@ -388,7 +388,7 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
             flush=True,
         )
         print("  Interactive prompt: available on demand", flush=True)
-        print(f"  Effective source if relogin api runs now: {api_key.effective_source}", flush=True)
+        print(f"  Effective source if `api --relogin` runs now: {api_key.effective_source}", flush=True)
 
     codex_login_status(codex_bin)
 
@@ -519,7 +519,7 @@ def switch_chatgpt(paths: Paths, codex_bin: str) -> None:
         raise CodexModeError("No Codex auth state found. Run `codex login` first.")
 
     save_current_snapshot(paths)
-    require_file(paths.chatgpt_auth_file, "No saved ChatGPT session snapshot found. Use `relogin chatgpt`.")
+    require_file(paths.chatgpt_auth_file, "No saved ChatGPT session snapshot found. Use `chatgpt --relogin`.")
 
     shutil.copy2(paths.chatgpt_auth_file, paths.auth_file)
     remove_openai_base_url(paths.config_file)
@@ -527,6 +527,13 @@ def switch_chatgpt(paths: Paths, codex_bin: str) -> None:
     print("Switched Codex to ChatGPT billing mode.", flush=True)
     print("If Codex App is open, fully quit and reopen it.", flush=True)
     codex_login_status(codex_bin)
+
+
+def switch_or_relogin_chatgpt(paths: Paths, codex_bin: str, *, relogin: bool) -> None:
+    if relogin:
+        relogin_chatgpt(paths, codex_bin)
+    else:
+        switch_chatgpt(paths, codex_bin)
 
 
 def switch_api(
@@ -565,6 +572,23 @@ def switch_api(
     print(f"Configured openai_base_url = {final_base_url}", flush=True)
     print("If Codex App is open, fully quit and reopen it.", flush=True)
     codex_login_status(codex_bin)
+
+
+def switch_or_relogin_api(
+    paths: Paths,
+    codex_bin: str,
+    *,
+    base_url: str | None,
+    relogin: bool,
+    prompt_for_key: bool,
+) -> None:
+    switch_api(
+        paths,
+        codex_bin,
+        base_url=base_url,
+        refresh_auth=relogin,
+        prompt_for_key=prompt_for_key,
+    )
 
 
 def relogin_chatgpt(paths: Paths, codex_bin: str) -> None:
@@ -810,11 +834,10 @@ def build_parser() -> argparse.ArgumentParser:
           codex-mode config api-key --show-full
           codex-mode config api-key --prompt
           codex-mode chatgpt
+          codex-mode chatgpt --relogin
           codex-mode api --base-url https://api.xairouter.com
-          codex-mode api --base-url https://api.xairouter.com --prompt
-          codex-mode relogin chatgpt
-          codex-mode relogin api
-          codex-mode relogin api --prompt
+          codex-mode api --relogin
+          codex-mode api --relogin --prompt
           codex-mode update
           codex-mode update --check
           codex-mode update --download
@@ -866,7 +889,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     config_api_key = config_sub.add_parser(
         "api-key",
-        help="Show or change the API key used by relogin/api mode",
+        help="Show or change the API key used by API mode",
         description=(
             "Show the current effective API key source and value, or save/clear a managed API key. "
             "By default the value is masked."
@@ -883,45 +906,35 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Select where to save or clear the managed API key",
     )
-    sub.add_parser(
+    chatgpt_parser = sub.add_parser(
         "chatgpt",
         help="Switch to the saved ChatGPT login snapshot",
-        description="Restore the saved ChatGPT auth snapshot and remove any API-only openai_base_url override.",
+        description=(
+            "Restore the saved ChatGPT auth snapshot and remove any API-only openai_base_url override. "
+            "Use --relogin to run a fresh `codex login` and refresh the saved snapshot."
+        ),
+    )
+    chatgpt_parser.add_argument(
+        "--relogin",
+        action="store_true",
+        help="Run a fresh ChatGPT login and refresh the saved snapshot before switching",
     )
 
     api_parser = sub.add_parser(
         "api",
         help="Switch to API-key mode",
         description=(
-            "Switch Codex into API-key mode. Optionally set --base-url and use --refresh-auth to force a fresh key read. "
+            "Switch Codex into API-key mode. Optionally set --base-url and use --relogin to force a fresh key read. "
             "By default this command does not prompt for an API key."
         ),
     )
     api_parser.add_argument("--base-url")
-    api_parser.add_argument("--refresh-auth", action="store_true")
+    api_parser.add_argument(
+        "--relogin",
+        action="store_true",
+        help="Force a fresh API-key login and refresh the saved API snapshot",
+    )
     api_parser.add_argument("--prompt", action="store_true", help="Allow a secure prompt for the API key if no stored key is available")
-
-    relogin_parser = sub.add_parser(
-        "relogin",
-        help="Refresh the saved ChatGPT or API login snapshot",
-        description="Run a fresh login flow and update the stored snapshot for the selected mode.",
-    )
-    relogin_sub = relogin_parser.add_subparsers(dest="target", required=True)
-    relogin_sub.add_parser(
-        "chatgpt",
-        help="Run codex login for ChatGPT mode",
-        description="Remove API-only base URL settings, run `codex login`, and save a fresh ChatGPT snapshot.",
-    )
-    relogin_api = relogin_sub.add_parser(
-        "api",
-        help="Refresh API-key auth",
-        description=(
-            "Force a fresh API-key login using the configured source order for your platform. "
-            "By default this command does not prompt for an API key."
-        ),
-    )
-    relogin_api.add_argument("--base-url")
-    relogin_api.add_argument("--prompt", action="store_true", help="Allow a secure prompt for the API key if no stored key is available")
 
     update_parser = sub.add_parser(
         "update",
@@ -951,9 +964,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser._subcommand_parsers = {
         "status": status_parser,
         "config": config_parser,
-        "chatgpt": sub.choices["chatgpt"],
+        "chatgpt": chatgpt_parser,
         "api": api_parser,
-        "relogin": relogin_parser,
         "update": update_parser,
         "help": help_parser,
     }
@@ -974,28 +986,15 @@ def main(argv: list[str]) -> int:
         elif args.command == "config":
             handle_config_command(paths, args)
         elif args.command == "chatgpt":
-            switch_chatgpt(paths, codex_bin)
+            switch_or_relogin_chatgpt(paths, codex_bin, relogin=args.relogin)
         elif args.command == "api":
-            switch_api(
+            switch_or_relogin_api(
                 paths,
                 codex_bin,
                 base_url=args.base_url,
-                refresh_auth=args.refresh_auth,
+                relogin=args.relogin,
                 prompt_for_key=args.prompt,
             )
-        elif args.command == "relogin":
-            if args.target == "chatgpt":
-                relogin_chatgpt(paths, codex_bin)
-            elif args.target == "api":
-                switch_api(
-                    paths,
-                    codex_bin,
-                    base_url=args.base_url,
-                    refresh_auth=True,
-                    prompt_for_key=args.prompt,
-                )
-            else:
-                parser.error("unsupported relogin target")
         elif args.command == "update":
             update_from_repo(args.repo, allow_download=args.download, check_only=args.check)
         elif args.command == "help":

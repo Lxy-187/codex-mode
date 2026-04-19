@@ -11,7 +11,8 @@
 - Replaced the old `setup` command with `config`, so URL and API-key inspection and edits happen through one command tree
 - Added managed API-key storage with masked display and optional full display
 - Fixed Windows config writing to preserve line endings and avoid malformed `config.toml` output
-- Changed `api` and `relogin api` so they do not block on interactive key prompts unless `--prompt` is explicitly passed
+- Changed `api` and `api --relogin` so they do not block on interactive key prompts unless `--prompt` is explicitly passed
+- Removed the `relogin` subcommand and moved that behavior to `chatgpt --relogin` and `api --relogin`
 
 ## 0.1.0 - 2026-04-19
 
@@ -29,6 +30,4 @@
   - `status`
   - `chatgpt`
   - `api`
-  - `relogin chatgpt`
-  - `relogin api`
 - Added release zip packaging and repository-ready metadata
