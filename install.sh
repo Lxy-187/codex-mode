@@ -8,10 +8,12 @@ mkdir -p "$TARGET_DIR"
 
 install -m 755 "$SCRIPT_DIR/codex-mode" "$TARGET_DIR/codex-mode"
 install -m 755 "$SCRIPT_DIR/codex_mode.py" "$TARGET_DIR/codex_mode.py"
+printf '%s\n' "$SCRIPT_DIR" > "$TARGET_DIR/.codex-mode-source"
 
 printf 'Installed:\n'
 printf '  %s\n' "$TARGET_DIR/codex-mode"
 printf '  %s\n' "$TARGET_DIR/codex_mode.py"
+printf '  %s\n' "$TARGET_DIR/.codex-mode-source"
 
 case ":${PATH:-}:" in
   *:"$TARGET_DIR":*)

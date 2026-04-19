@@ -12,10 +12,13 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 from dataclasses import dataclass
 
 
 KEYCHAIN_SERVICE = "codex-openai-api-key"
+REPO_HINT_NAMES = ("codex-mode", "codex-mode-portable")
+SOURCE_MARKER = ".codex-mode-source"
 
 
 class CodexModeError(Exception):
@@ -35,6 +38,7 @@ class Paths:
 
 @dataclass
 class ApiKeyInspection:
+    platform_name: str
     keychain_supported: bool
     keychain_has_value: bool
     env_var_name: str
@@ -75,6 +79,10 @@ def detect_codex_bin() -> str:
             return which_exe
 
     raise CodexModeError("Could not find the Codex CLI. Put `codex` on PATH or set CODEX_BIN.")
+
+
+def current_platform_name() -> str:
+    return platform.system() or "Unknown"
 
 
 def ensure_profile_dir(paths: Paths) -> None:
@@ -197,7 +205,8 @@ def inspect_api_key_sources() -> ApiKeyInspection:
     env_var_name = "OPENAI_API_KEY"
     env_value = os.environ.get(env_var_name, "").strip()
     keychain_value = read_mac_keychain_key()
-    keychain_supported = platform.system() == "Darwin" and shutil.which("security") is not None
+    platform_name = current_platform_name()
+    keychain_supported = platform_name == "Darwin" and shutil.which("security") is not None
 
     if keychain_value:
         effective_source = "macOS Keychain"
@@ -207,6 +216,7 @@ def inspect_api_key_sources() -> ApiKeyInspection:
         effective_source = "interactive prompt"
 
     return ApiKeyInspection(
+        platform_name=platform_name,
         keychain_supported=keychain_supported,
         keychain_has_value=bool(keychain_value),
         env_var_name=env_var_name,
@@ -235,7 +245,7 @@ def resolve_base_url(paths: Paths, arg_base_url: str | None) -> str:
     return read_openai_base_url(paths.config_file).strip()
 
 
-def print_status(paths: Paths, codex_bin: str) -> None:
+def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
     auth_mode = read_auth_mode(paths.auth_file)
     config_base_url = read_openai_base_url(paths.config_file)
     saved_api_base_url = paths.api_base_url_file.read_text().strip() if paths.api_base_url_file.exists() else ""
@@ -251,31 +261,80 @@ def print_status(paths: Paths, codex_bin: str) -> None:
     else:
         print("Current mode: unknown", flush=True)
 
-    print(f"Codex home: {paths.codex_home}", flush=True)
-    print(f"Auth file: {'present' if paths.auth_file.exists() else 'missing'}", flush=True)
-    print(f"Saved ChatGPT snapshot: {'present' if paths.chatgpt_auth_file.exists() else 'missing'}", flush=True)
-    print(f"Saved API snapshot: {'present' if paths.api_auth_file.exists() else 'missing'}", flush=True)
+    if auth_mode == "apikey":
+        print(f"Effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
 
-    print(f"Config base URL: {config_base_url or 'not set'}", flush=True)
-    print(f"Saved API base URL: {saved_api_base_url or 'not set'}", flush=True)
-    print(f"Effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
+    if verbose:
+        print(f"Codex home: {paths.codex_home}", flush=True)
+        print(f"Auth file: {'present' if paths.auth_file.exists() else 'missing'}", flush=True)
+        print(f"Saved ChatGPT snapshot: {'present' if paths.chatgpt_auth_file.exists() else 'missing'}", flush=True)
+        print(f"Saved API snapshot: {'present' if paths.api_auth_file.exists() else 'missing'}", flush=True)
 
-    print("API key sources:", flush=True)
-    if api_key.keychain_supported:
+        print(f"Config base URL: {config_base_url or 'not set'}", flush=True)
+        print(f"Saved API base URL: {saved_api_base_url or 'not set'}", flush=True)
+        print(f"Effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
+
+        print("API key sources:", flush=True)
+        if api_key.platform_name == "Darwin":
+            print(
+                f"  macOS Keychain ({KEYCHAIN_SERVICE}): {'found' if api_key.keychain_has_value else 'not found'}",
+                flush=True,
+            )
         print(
-            f"  macOS Keychain ({KEYCHAIN_SERVICE}): {'found' if api_key.keychain_has_value else 'not found'}",
+            f"  Environment variable {api_key.env_var_name}: {'set' if api_key.env_var_has_value else 'not set'}",
             flush=True,
         )
-    else:
-        print("  macOS Keychain: not supported on this platform", flush=True)
-    print(
-        f"  Environment variable {api_key.env_var_name}: {'set' if api_key.env_var_has_value else 'not set'}",
-        flush=True,
-    )
-    print("  Interactive prompt: available on demand", flush=True)
-    print(f"  Effective source if relogin api runs now: {api_key.effective_source}", flush=True)
+        print("  Interactive prompt: available on demand", flush=True)
+        print(f"  Effective source if relogin api runs now: {api_key.effective_source}", flush=True)
 
     codex_login_status(codex_bin)
+
+
+def print_setup(paths: Paths) -> None:
+    api_key = inspect_api_key_sources()
+    effective_api_base_url = resolve_base_url(paths, None)
+
+    print("Codex-mode setup guide", flush=True)
+    print("", flush=True)
+    print("ChatGPT mode:", flush=True)
+    print("  Use this when you want Codex to bill against your ChatGPT plan.", flush=True)
+    print("  Refresh the login if it has expired:", flush=True)
+    print("    codex-mode relogin chatgpt", flush=True)
+    print("", flush=True)
+    print("API mode:", flush=True)
+    print("  Set or update the API-compatible base URL:", flush=True)
+    print("    codex-mode api --base-url https://api.xairouter.com", flush=True)
+    print("  Refresh API auth after changing the key:", flush=True)
+    print("    codex-mode relogin api", flush=True)
+    print("", flush=True)
+    print(f"Current effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
+    print("", flush=True)
+    print("API key sources for this platform:", flush=True)
+    if api_key.platform_name == "Darwin":
+        print(f"  1. macOS Keychain service `{KEYCHAIN_SERVICE}`", flush=True)
+        print(
+            "     Example: security add-generic-password -U -a \"$USER\" -s "
+            f"{KEYCHAIN_SERVICE} -w 'sk-...'",
+            flush=True,
+        )
+        print(f"  2. Environment variable `{api_key.env_var_name}`", flush=True)
+        print("     Example: export OPENAI_API_KEY='sk-...'", flush=True)
+    elif api_key.platform_name == "Windows":
+        print(f"  1. Environment variable `{api_key.env_var_name}`", flush=True)
+        print("     PowerShell example: $env:OPENAI_API_KEY = 'sk-...'", flush=True)
+        print("     Persisted example: setx OPENAI_API_KEY \"sk-...\"", flush=True)
+    else:
+        print(f"  1. Environment variable `{api_key.env_var_name}`", flush=True)
+        print("     Example: export OPENAI_API_KEY='sk-...'", flush=True)
+    print("  3. Interactive prompt if nothing else is configured", flush=True)
+    print("", flush=True)
+    print("Useful commands:", flush=True)
+    print("  codex-mode status", flush=True)
+    print("  codex-mode chatgpt", flush=True)
+    print("  codex-mode api --base-url https://api.xairouter.com", flush=True)
+    print("  codex-mode relogin chatgpt", flush=True)
+    print("  codex-mode relogin api", flush=True)
+    print("  codex-mode update", flush=True)
 
 
 def switch_chatgpt(paths: Paths, codex_bin: str) -> None:
@@ -338,22 +397,201 @@ def relogin_chatgpt(paths: Paths, codex_bin: str) -> None:
     codex_login_status(codex_bin)
 
 
+def is_repo_dir(path: pathlib.Path) -> bool:
+    return (path / ".git").exists()
+
+
+def repo_matches_codex_mode(repo_dir: pathlib.Path) -> bool:
+    if not is_repo_dir(repo_dir):
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_dir), "remote", "get-url", "origin"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return False
+    origin = proc.stdout.strip()
+    return "Lxy-187/codex-mode" in origin or origin.endswith("/codex-mode") or origin.endswith("/codex-mode.git")
+
+
+def find_update_repo(explicit_repo: str | None) -> pathlib.Path:
+    candidates: list[pathlib.Path] = []
+
+    if explicit_repo:
+        candidates.append(pathlib.Path(explicit_repo).expanduser().resolve())
+
+    env_repo = os.environ.get("CODEX_MODE_REPO")
+    if env_repo:
+        candidates.append(pathlib.Path(env_repo).expanduser().resolve())
+
+    script_dir = pathlib.Path(__file__).resolve().parent
+    cwd = pathlib.Path.cwd().resolve()
+    marker_file = script_dir / SOURCE_MARKER
+    if marker_file.exists():
+        marker_text = marker_file.read_text(encoding="utf-8").strip()
+        if marker_text:
+            candidates.append(pathlib.Path(marker_text).expanduser().resolve())
+
+    def add_with_parents(path: pathlib.Path) -> None:
+        current = path
+        while True:
+            candidates.append(current)
+            if current.parent == current:
+                break
+            current = current.parent
+
+    add_with_parents(script_dir)
+    add_with_parents(cwd)
+
+    home = pathlib.Path.home().resolve()
+    for name in REPO_HINT_NAMES:
+        candidates.append(home / name)
+
+    seen: set[pathlib.Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if repo_matches_codex_mode(candidate):
+            return candidate
+
+    raise CodexModeError(
+        "Could not find a codex-mode git repo for update. Run from the repo, set CODEX_MODE_REPO, "
+        "or pass `codex-mode update --repo PATH`."
+    )
+
+
+def install_from_repo(repo_dir: pathlib.Path, target_dir: pathlib.Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(repo_dir / "codex_mode.py", target_dir / "codex_mode.py")
+
+    system = current_platform_name()
+    if system == "Windows":
+        shutil.copy2(repo_dir / "codex-mode.ps1", target_dir / "codex-mode.ps1")
+        shutil.copy2(repo_dir / "codex-mode.cmd", target_dir / "codex-mode.cmd")
+    else:
+        shutil.copy2(repo_dir / "codex-mode", target_dir / "codex-mode")
+        os.chmod(target_dir / "codex-mode", 0o755)
+
+
+def update_from_repo(explicit_repo: str | None) -> None:
+    repo_dir = find_update_repo(explicit_repo)
+    script_dir = pathlib.Path(__file__).resolve().parent
+    target_dir = script_dir
+
+    subprocess.run(["git", "-C", str(repo_dir), "pull", "--ff-only"], check=True)
+
+    if repo_dir != target_dir:
+        install_from_repo(repo_dir, target_dir)
+        print(f"Updated from repo: {repo_dir}", flush=True)
+        print(f"Reinstalled into: {target_dir}", flush=True)
+    else:
+        print(f"Updated repo in place: {repo_dir}", flush=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="codex-mode")
+    description = textwrap.dedent(
+        """
+        Codex auth-mode manager.
+
+        Use this tool to inspect the current Codex login state, switch between ChatGPT and API-key
+        billing modes, refresh expired logins, and update an installed copy from a cloned repo.
+        """
+    ).strip()
+    epilog = textwrap.dedent(
+        """
+        Common examples:
+          codex-mode status
+          codex-mode setup
+          codex-mode chatgpt
+          codex-mode api --base-url https://api.xairouter.com
+          codex-mode relogin chatgpt
+          codex-mode relogin api
+          codex-mode update
+          codex-mode update --repo C:\\path\\to\\codex-mode
+
+        API-key lookup order:
+          macOS: Keychain -> OPENAI_API_KEY -> interactive prompt
+          Windows/Linux: OPENAI_API_KEY -> interactive prompt
+        """
+    ).strip()
+    parser = argparse.ArgumentParser(
+        prog="codex-mode",
+        description=description,
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("status")
-    sub.add_parser("chatgpt")
+    status_parser = sub.add_parser(
+        "status",
+        help="Show current mode and login summary",
+        description="Show the current Codex auth mode. Use --verbose for base URL, snapshot, and key-source diagnostics.",
+    )
+    status_parser.add_argument("-v", "--verbose", action="store_true", help="Show detailed diagnostics")
+    sub.add_parser(
+        "setup",
+        help="Show setup instructions for URL and API key configuration",
+        description="Print platform-aware setup instructions for ChatGPT mode, API mode, base URL configuration, and API key sources.",
+    )
+    sub.add_parser(
+        "chatgpt",
+        help="Switch to the saved ChatGPT login snapshot",
+        description="Restore the saved ChatGPT auth snapshot and remove any API-only openai_base_url override.",
+    )
 
-    api_parser = sub.add_parser("api")
+    api_parser = sub.add_parser(
+        "api",
+        help="Switch to API-key mode",
+        description="Switch Codex into API-key mode. Optionally set --base-url and use --refresh-auth to force a fresh key read.",
+    )
     api_parser.add_argument("--base-url")
     api_parser.add_argument("--refresh-auth", action="store_true")
 
-    relogin_parser = sub.add_parser("relogin")
+    relogin_parser = sub.add_parser(
+        "relogin",
+        help="Refresh the saved ChatGPT or API login snapshot",
+        description="Run a fresh login flow and update the stored snapshot for the selected mode.",
+    )
     relogin_sub = relogin_parser.add_subparsers(dest="target", required=True)
-    relogin_sub.add_parser("chatgpt")
-    relogin_api = relogin_sub.add_parser("api")
+    relogin_sub.add_parser(
+        "chatgpt",
+        help="Run codex login for ChatGPT mode",
+        description="Remove API-only base URL settings, run `codex login`, and save a fresh ChatGPT snapshot.",
+    )
+    relogin_api = relogin_sub.add_parser(
+        "api",
+        help="Refresh API-key auth",
+        description="Force a fresh API-key login using the configured source order for your platform.",
+    )
     relogin_api.add_argument("--base-url")
+
+    update_parser = sub.add_parser(
+        "update",
+        help="Pull the latest repo changes and reinstall this copy when possible",
+        description="Update codex-mode from a cloned git repo. Works best inside the repo, with CODEX_MODE_REPO set, or with --repo PATH.",
+    )
+    update_parser.add_argument("--repo")
+
+    help_parser = sub.add_parser(
+        "help",
+        help="Show general help or help for a subcommand",
+        description="Show the top-level help text or help for one specific subcommand, such as `codex-mode help setup`.",
+    )
+    help_parser.add_argument("topic", nargs="?")
+
+    parser._subcommand_parsers = {
+        "status": status_parser,
+        "setup": sub.choices["setup"],
+        "chatgpt": sub.choices["chatgpt"],
+        "api": api_parser,
+        "relogin": relogin_parser,
+        "update": update_parser,
+        "help": help_parser,
+    }
 
     return parser
 
@@ -367,7 +605,9 @@ def main(argv: list[str]) -> int:
 
     try:
         if args.command in (None, "status"):
-            print_status(paths, codex_bin)
+            print_status(paths, codex_bin, verbose=getattr(args, "verbose", False))
+        elif args.command == "setup":
+            print_setup(paths)
         elif args.command == "chatgpt":
             switch_chatgpt(paths, codex_bin)
         elif args.command == "api":
@@ -379,6 +619,17 @@ def main(argv: list[str]) -> int:
                 switch_api(paths, codex_bin, base_url=args.base_url, refresh_auth=True)
             else:
                 parser.error("unsupported relogin target")
+        elif args.command == "update":
+            update_from_repo(args.repo)
+        elif args.command == "help":
+            topic = args.topic
+            if not topic:
+                parser.print_help()
+            else:
+                subparser = parser._subcommand_parsers.get(topic)
+                if subparser is None:
+                    raise CodexModeError(f"Unknown help topic: {topic}")
+                subparser.print_help()
         else:
             parser.error("unsupported command")
     except CodexModeError as exc:

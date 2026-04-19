@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added `setup`, `help`, and `update` subcommands
+- Changed `status` to default to a simple summary
+- Added `status --verbose` for detailed diagnostics
+- Hid macOS Keychain diagnostics on non-macOS platforms
+- Improved config parsing and root-level `openai_base_url` insertion
+
 ## 0.1.0 - 2026-04-19
 
 - Initial cross-platform portable release
