@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import locale
 import os
 import pathlib
 import platform
@@ -93,12 +94,29 @@ def read_auth_mode(auth_file: pathlib.Path) -> str:
 def read_config_text(config_file: pathlib.Path) -> str:
     if not config_file.exists():
         return ""
-    return config_file.read_text()
+    raw = config_file.read_bytes()
+    encodings = [
+        "utf-8",
+        "utf-8-sig",
+        locale.getpreferredencoding(False) or "utf-8",
+        "gb18030",
+        "latin-1",
+    ]
+    seen: set[str] = set()
+    for encoding in encodings:
+        if encoding in seen:
+            continue
+        seen.add(encoding)
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
 
 
 def write_config_text(config_file: pathlib.Path, text: str) -> None:
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    config_file.write_text(text)
+    config_file.write_text(text, encoding="utf-8")
 
 
 def read_openai_base_url(config_file: pathlib.Path) -> str:
@@ -116,14 +134,22 @@ def remove_openai_base_url(config_file: pathlib.Path) -> None:
 
 def set_openai_base_url(config_file: pathlib.Path, base_url: str) -> None:
     text = read_config_text(config_file)
-    line = f'openai_base_url = "{base_url}"'
-    if re.search(r"(?m)^openai_base_url\s*=", text):
-        text = re.sub(r"(?m)^openai_base_url\s*=.*$", line, text, count=1)
-    else:
-        if text and not text.endswith("\n"):
-            text += "\n"
-        text += line + "\n"
-    write_config_text(config_file, text)
+    text = re.sub(r'(?m)^openai_base_url\s*=.*\n?', '', text)
+    lines = text.splitlines(keepends=True)
+    insert_at = len(lines)
+    for idx, line in enumerate(lines):
+        if line.lstrip().startswith("["):
+            insert_at = idx
+            break
+
+    new_lines = lines[:insert_at]
+    if new_lines and not new_lines[-1].endswith("\n"):
+        new_lines[-1] = new_lines[-1] + "\n"
+    new_lines.append(f'openai_base_url = "{base_url}"\n')
+    if insert_at < len(lines) and new_lines and new_lines[-1].strip():
+        new_lines.append("\n")
+    new_lines.extend(lines[insert_at:])
+    write_config_text(config_file, "".join(new_lines))
 
 
 def save_current_snapshot(paths: Paths) -> None:
