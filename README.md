@@ -13,19 +13,22 @@ Features:
 
 - `status`: show a simple current-mode summary
 - `status --verbose`: show base URL, snapshot, and API-key source diagnostics
-- `setup`: show platform-aware setup guidance for ChatGPT mode, API mode, URL, and key sources
+- `config --list`: show the saved API URL, effective API URL, and API-key source summary
+- `config base-url`: show, set, or clear the saved API base URL
+- `config api-key`: show, set, prompt for, or clear the managed API key
 - `chatgpt`: switch back to saved ChatGPT auth snapshot
 - `api`: switch to API-key mode
 - `relogin chatgpt`: perform a fresh `codex login` and refresh the ChatGPT snapshot
 - `relogin api`: refresh API-key auth using the configured rules
 - `update`: update from a local repo, with optional GitHub download fallback
-- `help`: show top-level help or help for one subcommand, for example `codex-mode help setup`
+- `help`: show top-level help or help for one subcommand, for example `codex-mode help config`
 
 API-key lookup order:
 
 1. macOS Keychain service `codex-openai-api-key` if available
-2. `OPENAI_API_KEY` environment variable
-3. hidden prompt in the terminal
+2. Managed file `~/.codex/auth-profiles/api.key`
+3. `OPENAI_API_KEY` environment variable
+4. hidden prompt in the terminal
 
 Files managed under `~/.codex`:
 
@@ -34,6 +37,7 @@ Files managed under `~/.codex`:
 - `auth-profiles/chatgpt.auth.json`
 - `auth-profiles/api.auth.json`
 - `auth-profiles/api.base_url`
+- `auth-profiles/api.key`
 
 Quick start:
 
@@ -64,7 +68,12 @@ Examples:
 ./codex-mode
 ./codex-mode status
 ./codex-mode status --verbose
-./codex-mode setup
+./codex-mode config --list
+./codex-mode config base-url
+./codex-mode config base-url --set https://api.xairouter.com
+./codex-mode config api-key
+./codex-mode config api-key --show-full
+./codex-mode config api-key --prompt
 ./codex-mode help api
 ./codex-mode help update
 ./codex-mode chatgpt
@@ -94,7 +103,8 @@ Notes:
 - After switching modes in Codex App, fully quit and reopen the app.
 - `chatgpt` restores a saved login snapshot. If that snapshot has expired, use `relogin chatgpt`.
 - `api` restores a saved API login snapshot if present. Use `relogin api` when the key changes.
-- macOS uses Keychain as an optional API-key source. Linux and Windows use `OPENAI_API_KEY` or a hidden prompt.
+- `config api-key --set` saves to macOS Keychain by default on macOS, and to `~/.codex/auth-profiles/api.key` on Linux or Windows.
+- `config api-key --clear` only clears the selected managed store. It does not modify `OPENAI_API_KEY`.
 - If `codex` is not on PATH, set `CODEX_BIN` before running. Example on Windows PowerShell:
 - `update` works best when:
   - you run it inside the cloned repo, or

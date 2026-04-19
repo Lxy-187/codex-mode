@@ -44,6 +44,7 @@ class Paths:
     chatgpt_auth_file: pathlib.Path
     api_auth_file: pathlib.Path
     api_base_url_file: pathlib.Path
+    api_key_file: pathlib.Path
 
 
 @dataclass
@@ -51,9 +52,11 @@ class ApiKeyInspection:
     platform_name: str
     keychain_supported: bool
     keychain_has_value: bool
+    file_has_value: bool
     env_var_name: str
     env_var_has_value: bool
     effective_source: str
+    effective_value: str
 
 
 def build_paths() -> Paths:
@@ -66,6 +69,7 @@ def build_paths() -> Paths:
         chatgpt_auth_file=codex_home / "auth-profiles" / "chatgpt.auth.json",
         api_auth_file=codex_home / "auth-profiles" / "api.auth.json",
         api_base_url_file=codex_home / "auth-profiles" / "api.base_url",
+        api_key_file=codex_home / "auth-profiles" / "api.key",
     )
 
 
@@ -135,6 +139,24 @@ def read_config_text(config_file: pathlib.Path) -> str:
 def write_config_text(config_file: pathlib.Path, text: str) -> None:
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text(text, encoding="utf-8")
+
+
+def write_secret_text(secret_file: pathlib.Path, value: str) -> None:
+    secret_file.parent.mkdir(parents=True, exist_ok=True)
+    secret_file.write_text(value.strip() + "\n", encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(secret_file, 0o600)
+
+
+def read_secret_text(secret_file: pathlib.Path) -> str:
+    if not secret_file.exists():
+        return ""
+    return secret_file.read_text(encoding="utf-8").strip()
+
+
+def remove_secret_file(secret_file: pathlib.Path) -> None:
+    if secret_file.exists():
+        secret_file.unlink()
 
 
 def read_openai_base_url(config_file: pathlib.Path) -> str:
@@ -211,32 +233,87 @@ def read_mac_keychain_key() -> str:
     return proc.stdout.strip()
 
 
-def inspect_api_key_sources() -> ApiKeyInspection:
+def write_mac_keychain_key(value: str) -> None:
+    if platform.system() != "Darwin":
+        raise CodexModeError("macOS Keychain is only available on macOS.")
+    if not shutil.which("security"):
+        raise CodexModeError("Could not find the macOS `security` tool.")
+    proc = subprocess.run(
+        ["security", "add-generic-password", "-U", "-a", getpass.getuser(), "-s", KEYCHAIN_SERVICE, "-w", value],
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise CodexModeError(proc.stderr.strip() or "Failed to write the API key to macOS Keychain.")
+
+
+def remove_mac_keychain_key() -> None:
+    if platform.system() != "Darwin":
+        raise CodexModeError("macOS Keychain is only available on macOS.")
+    if not shutil.which("security"):
+        raise CodexModeError("Could not find the macOS `security` tool.")
+    proc = subprocess.run(
+        ["security", "delete-generic-password", "-a", getpass.getuser(), "-s", KEYCHAIN_SERVICE],
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0 and "could not be found" not in proc.stderr.lower():
+        raise CodexModeError(proc.stderr.strip() or "Failed to remove the API key from macOS Keychain.")
+
+
+def read_managed_api_key(paths: Paths) -> str:
+    return read_secret_text(paths.api_key_file)
+
+
+def mask_secret(value: str) -> str:
+    if not value:
+        return "not set"
+    if len(value) <= 8:
+        if len(value) <= 2:
+            return "*" * len(value)
+        return value[:1] + "*" * (len(value) - 2) + value[-1:]
+    return value[:4] + "*" * (len(value) - 8) + value[-4:]
+
+
+def inspect_api_key_sources(paths: Paths) -> ApiKeyInspection:
     env_var_name = "OPENAI_API_KEY"
     env_value = os.environ.get(env_var_name, "").strip()
     keychain_value = read_mac_keychain_key()
+    file_value = read_managed_api_key(paths)
     platform_name = current_platform_name()
     keychain_supported = platform_name == "Darwin" and shutil.which("security") is not None
 
     if keychain_value:
         effective_source = "macOS Keychain"
+        effective_value = keychain_value
+    elif file_value:
+        effective_source = "managed file"
+        effective_value = file_value
     elif env_value:
         effective_source = env_var_name
+        effective_value = env_value
     else:
         effective_source = "interactive prompt"
+        effective_value = ""
 
     return ApiKeyInspection(
         platform_name=platform_name,
         keychain_supported=keychain_supported,
         keychain_has_value=bool(keychain_value),
+        file_has_value=bool(file_value),
         env_var_name=env_var_name,
         env_var_has_value=bool(env_value),
         effective_source=effective_source,
+        effective_value=effective_value,
     )
 
 
-def resolve_api_key() -> str:
+def resolve_api_key(paths: Paths) -> str:
     key = read_mac_keychain_key()
+    if key:
+        return key
+
+    key = read_managed_api_key(paths)
     if key:
         return key
 
@@ -260,7 +337,7 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
     config_base_url = read_openai_base_url(paths.config_file)
     saved_api_base_url = paths.api_base_url_file.read_text().strip() if paths.api_base_url_file.exists() else ""
     effective_api_base_url = resolve_base_url(paths, None)
-    api_key = inspect_api_key_sources()
+    api_key = inspect_api_key_sources(paths)
 
     if auth_mode == "chatgpt":
         print("Current mode: ChatGPT", flush=True)
@@ -291,6 +368,10 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
                 flush=True,
             )
         print(
+            f"  Managed file ({paths.api_key_file}): {'set' if api_key.file_has_value else 'not set'}",
+            flush=True,
+        )
+        print(
             f"  Environment variable {api_key.env_var_name}: {'set' if api_key.env_var_has_value else 'not set'}",
             flush=True,
         )
@@ -300,101 +381,124 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
     codex_login_status(codex_bin)
 
 
-def print_setup(paths: Paths) -> None:
-    api_key = inspect_api_key_sources()
+def print_config_list(paths: Paths) -> None:
+    auth_mode = read_auth_mode(paths.auth_file) or "unknown"
+    config_base_url = read_openai_base_url(paths.config_file)
+    saved_api_base_url = read_secret_text(paths.api_base_url_file)
     effective_api_base_url = resolve_base_url(paths, None)
+    api_key = inspect_api_key_sources(paths)
 
-    print("Codex-mode setup guide", flush=True)
+    print("Codex-mode configuration", flush=True)
+    print(f"Current mode: {auth_mode}", flush=True)
+    print(f"Codex home: {paths.codex_home}", flush=True)
     print("", flush=True)
-    print("Purpose", flush=True)
-    print("  codex-mode manages three things:", flush=True)
-    print("  - your saved ChatGPT login snapshot", flush=True)
-    print("  - your saved API-key login snapshot", flush=True)
-    print("  - the root-level `openai_base_url` used only in API mode", flush=True)
+    print("Base URL", flush=True)
+    print(f"  Config file value: {config_base_url or 'not set'}", flush=True)
+    print(f"  Saved API value: {saved_api_base_url or 'not set'}", flush=True)
+    print(f"  Effective API value: {effective_api_base_url or 'not set'}", flush=True)
     print("", flush=True)
-    print("Mode model", flush=True)
-    print("  - `chatgpt`: use your ChatGPT account session", flush=True)
-    print("  - `api`: use `codex login --with-api-key` plus an API-compatible base URL", flush=True)
-    print("  - switching modes does not create a fresh login unless you use `relogin`", flush=True)
-    print("", flush=True)
-    print("Current configuration", flush=True)
-    print(f"  - effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
-    print(f"  - codex home: {paths.codex_home}", flush=True)
-    print("", flush=True)
-    print("Common setup flows", flush=True)
-    print("  1. Use ChatGPT billing", flush=True)
-    print("     - switch to the saved ChatGPT session: `codex-mode chatgpt`", flush=True)
-    print("     - if that session is expired: `codex-mode relogin chatgpt`", flush=True)
-    print("  2. Use API billing with a custom gateway", flush=True)
-    print("     - set or update the base URL and switch mode:", flush=True)
-    print("       `codex-mode api --base-url https://api.xairouter.com`", flush=True)
-    print("     - if the API key changed, refresh auth: `codex-mode relogin api`", flush=True)
-    print("  3. Inspect what is active right now", flush=True)
-    print("     - quick summary: `codex-mode status`", flush=True)
-    print("     - full diagnostics: `codex-mode status --verbose`", flush=True)
-    print("", flush=True)
-    print("How to provide the API key", flush=True)
+    print("API key", flush=True)
+    print(f"  Effective source: {api_key.effective_source}", flush=True)
+    print(f"  Effective value: {mask_secret(api_key.effective_value)}", flush=True)
     if api_key.platform_name == "Darwin":
-        print("  Preferred order on macOS:", flush=True)
-        print(f"  1. macOS Keychain service `{KEYCHAIN_SERVICE}`", flush=True)
         print(
-            "     Save once: security add-generic-password -U -a \"$USER\" -s "
-            f"{KEYCHAIN_SERVICE} -w 'sk-...'",
+            f"  macOS Keychain ({KEYCHAIN_SERVICE}): {'set' if api_key.keychain_has_value else 'not set'}",
             flush=True,
         )
-        print("     Read current value: security find-generic-password -a \"$USER\" -s "
-              f"{KEYCHAIN_SERVICE} -w", flush=True)
-        print(f"  2. Environment variable `{api_key.env_var_name}`", flush=True)
-        print("     Temporary shell example: export OPENAI_API_KEY='sk-...'", flush=True)
-        print("  3. Interactive prompt if nothing else is configured", flush=True)
-    elif api_key.platform_name == "Windows":
-        print("  Preferred order on Windows:", flush=True)
-        print(f"  1. Environment variable `{api_key.env_var_name}`", flush=True)
-        print("     PowerShell example: $env:OPENAI_API_KEY = 'sk-...'", flush=True)
-        print("     Persisted example: setx OPENAI_API_KEY \"sk-...\"", flush=True)
-        print("  2. Interactive prompt if nothing else is configured", flush=True)
+    print(f"  Managed file ({paths.api_key_file}): {'set' if api_key.file_has_value else 'not set'}", flush=True)
+    print(
+        f"  Environment variable {api_key.env_var_name}: {'set' if api_key.env_var_has_value else 'not set'}",
+        flush=True,
+    )
+
+
+def show_base_url_config(paths: Paths) -> None:
+    auth_mode = read_auth_mode(paths.auth_file)
+    saved_api_base_url = read_secret_text(paths.api_base_url_file)
+    effective_api_base_url = resolve_base_url(paths, None)
+
+    print(f"Saved API base URL: {saved_api_base_url or 'not set'}", flush=True)
+    print(f"Effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
+    if auth_mode == "apikey":
+        print("Current mode uses the API base URL now.", flush=True)
     else:
-        print("  Preferred order on Linux:", flush=True)
-        print(f"  1. Environment variable `{api_key.env_var_name}`", flush=True)
-        print("     Shell example: export OPENAI_API_KEY='sk-...'", flush=True)
-        print("  2. Interactive prompt if nothing else is configured", flush=True)
-    print("", flush=True)
-    print("Examples", flush=True)
-    print("  - first-time API setup:", flush=True)
-    print("    `codex-mode api --base-url https://api.xairouter.com --refresh-auth`", flush=True)
-    print("  - switch back to account billing:", flush=True)
-    print("    `codex-mode chatgpt`", flush=True)
-    print("  - refresh an expired ChatGPT session:", flush=True)
-    print("    `codex-mode relogin chatgpt`", flush=True)
-    print("  - refresh API auth after rotating the key:", flush=True)
-    print("    `codex-mode relogin api --base-url https://api.xairouter.com`", flush=True)
-    print("  - see where the API key would come from right now:", flush=True)
-    print("    `codex-mode status --verbose`", flush=True)
-    print("", flush=True)
-    print("Operational notes", flush=True)
-    print("  - `chatgpt` and `api` restore saved snapshots when possible", flush=True)
-    print("  - `relogin ...` performs a fresh login and refreshes the saved snapshot", flush=True)
-    print("  - after switching modes in Codex App, fully quit and reopen the app", flush=True)
-    print("  - `openai_base_url` is written at TOML root level, not inside a marketplace block", flush=True)
-    print("", flush=True)
-    print("Useful commands", flush=True)
-    print("  codex-mode status", flush=True)
-    print("  codex-mode status --verbose", flush=True)
-    print("  codex-mode setup", flush=True)
-    print("  codex-mode help api", flush=True)
-    print("  codex-mode help update", flush=True)
-    print("  codex-mode chatgpt", flush=True)
-    print("  codex-mode api --base-url https://api.xairouter.com", flush=True)
-    print("  codex-mode relogin chatgpt", flush=True)
-    print("  codex-mode relogin api", flush=True)
-    print("  codex-mode update", flush=True)
-    print("  codex-mode update --download", flush=True)
-    print("", flush=True)
-    print("Update behavior", flush=True)
-    print("  - `codex-mode update` checks for a usable local repo and updates from it if found", flush=True)
-    print("  - if no local repo is found, it stops and tells you how to continue", flush=True)
-    print("  - use `codex-mode update --download` to allow a GitHub download fallback", flush=True)
-    print(f"  - remote fallback source: {GITHUB_REPO}", flush=True)
+        print("Current mode is not API. The saved value will apply on the next API switch.", flush=True)
+
+
+def set_base_url_config(paths: Paths, base_url: str) -> None:
+    normalized = base_url.strip()
+    if not normalized:
+        raise CodexModeError("Base URL is empty.")
+
+    write_secret_text(paths.api_base_url_file, normalized)
+    if read_auth_mode(paths.auth_file) == "apikey":
+        set_openai_base_url(paths.config_file, normalized)
+
+    print(f"Saved API base URL: {normalized}", flush=True)
+    if read_auth_mode(paths.auth_file) == "apikey":
+        print("Applied the new base URL to the active API mode config.", flush=True)
+    else:
+        print("Saved for the next API mode switch. ChatGPT mode was left unchanged.", flush=True)
+
+
+def unset_base_url_config(paths: Paths) -> None:
+    remove_secret_file(paths.api_base_url_file)
+    remove_openai_base_url(paths.config_file)
+    print("Cleared the saved API base URL.", flush=True)
+
+
+def default_api_key_store() -> str:
+    if current_platform_name() == "Darwin" and shutil.which("security") is not None:
+        return "keychain"
+    return "file"
+
+
+def resolve_api_key_store(store: str) -> str:
+    resolved = default_api_key_store() if store == "auto" else store
+    if resolved == "keychain" and current_platform_name() != "Darwin":
+        raise CodexModeError("The `keychain` store is only available on macOS.")
+    return resolved
+
+
+def show_api_key_config(paths: Paths, *, show_full: bool) -> None:
+    inspection = inspect_api_key_sources(paths)
+    print(f"Effective source: {inspection.effective_source}", flush=True)
+    if inspection.effective_value:
+        value = inspection.effective_value if show_full else mask_secret(inspection.effective_value)
+        print(f"Effective API key: {value}", flush=True)
+    else:
+        print("Effective API key: not set", flush=True)
+
+
+def set_api_key_config(paths: Paths, *, api_key: str, store: str) -> None:
+    normalized = api_key.strip()
+    if not normalized:
+        raise CodexModeError("API key is empty.")
+
+    resolved_store = resolve_api_key_store(store)
+    if resolved_store == "keychain":
+        write_mac_keychain_key(normalized)
+        print("Saved the API key to macOS Keychain.", flush=True)
+    elif resolved_store == "file":
+        write_secret_text(paths.api_key_file, normalized)
+        print(f"Saved the API key to the managed file: {paths.api_key_file}", flush=True)
+    else:
+        raise CodexModeError(f"Unsupported API-key store: {resolved_store}")
+
+    print(f"Stored API key: {mask_secret(normalized)}", flush=True)
+
+
+def clear_api_key_config(paths: Paths, *, store: str) -> None:
+    resolved_store = resolve_api_key_store(store)
+    if resolved_store == "keychain":
+        remove_mac_keychain_key()
+        print("Cleared the API key from macOS Keychain.", flush=True)
+    elif resolved_store == "file":
+        remove_secret_file(paths.api_key_file)
+        print(f"Cleared the managed API key file: {paths.api_key_file}", flush=True)
+    else:
+        raise CodexModeError(f"Unsupported API-key store: {resolved_store}")
+    print("Environment variables are not modified by codex-mode.", flush=True)
 
 
 def switch_chatgpt(paths: Paths, codex_bin: str) -> None:
@@ -422,11 +526,11 @@ def switch_api(paths: Paths, codex_bin: str, *, base_url: str | None, refresh_au
     if not final_base_url:
         raise CodexModeError("No API base URL configured. Pass `--base-url URL`.")
 
-    paths.api_base_url_file.write_text(final_base_url)
+    write_secret_text(paths.api_base_url_file, final_base_url)
     set_openai_base_url(paths.config_file, final_base_url)
 
     if refresh_auth or not paths.api_auth_file.exists():
-        api_key = resolve_api_key()
+        api_key = resolve_api_key(paths)
         if not api_key:
             raise CodexModeError("API key is empty.")
         run_codex(codex_bin, ["login", "--with-api-key"], input_text=api_key)
@@ -633,6 +737,37 @@ def update_from_repo(explicit_repo: str | None, *, allow_download: bool, check_o
     update_from_github(target_dir)
 
 
+def handle_config_command(paths: Paths, args: argparse.Namespace) -> None:
+    if getattr(args, "list", False):
+        print_config_list(paths)
+        return
+
+    if args.config_target in (None, "base-url"):
+        if args.config_target is None:
+            print_config_list(paths)
+            return
+        if args.set is not None:
+            set_base_url_config(paths, args.set)
+        elif args.unset:
+            unset_base_url_config(paths)
+        else:
+            show_base_url_config(paths)
+        return
+
+    if args.config_target == "api-key":
+        if args.set is not None:
+            set_api_key_config(paths, api_key=args.set, store=args.store)
+        elif args.prompt:
+            set_api_key_config(paths, api_key=getpass.getpass("OpenAI API key: "), store=args.store)
+        elif args.clear:
+            clear_api_key_config(paths, store=args.store)
+        else:
+            show_api_key_config(paths, show_full=args.show_full)
+        return
+
+    raise CodexModeError("Unsupported config target.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     description = textwrap.dedent(
         """
@@ -646,8 +781,11 @@ def build_parser() -> argparse.ArgumentParser:
         """
         Common examples:
           codex-mode status
-          codex-mode setup
-          codex-mode help setup
+          codex-mode config --list
+          codex-mode config base-url --set https://api.xairouter.com
+          codex-mode config api-key
+          codex-mode config api-key --show-full
+          codex-mode config api-key --prompt
           codex-mode chatgpt
           codex-mode api --base-url https://api.xairouter.com
           codex-mode relogin chatgpt
@@ -658,8 +796,8 @@ def build_parser() -> argparse.ArgumentParser:
           codex-mode update --repo C:\\path\\to\\codex-mode
 
         API-key lookup order:
-          macOS: Keychain -> OPENAI_API_KEY -> interactive prompt
-          Windows/Linux: OPENAI_API_KEY -> interactive prompt
+          macOS: Keychain -> managed file -> OPENAI_API_KEY -> interactive prompt
+          Windows/Linux: managed file -> OPENAI_API_KEY -> interactive prompt
 
         Update strategy:
           1. Check for a local git repo and use `git pull --ff-only` when found
@@ -681,10 +819,44 @@ def build_parser() -> argparse.ArgumentParser:
         description="Show the current Codex auth mode. Use --verbose for base URL, snapshot, and key-source diagnostics.",
     )
     status_parser.add_argument("-v", "--verbose", action="store_true", help="Show detailed diagnostics")
-    sub.add_parser(
-        "setup",
-        help="Show setup instructions for URL and API key configuration",
-        description="Print platform-aware setup instructions for ChatGPT mode, API mode, base URL configuration, and API key sources.",
+    config_parser = sub.add_parser(
+        "config",
+        help="View or modify the saved API base URL and API key settings",
+        description=(
+            "Inspect or change codex-mode configuration. Use `config --list` for a full summary, "
+            "`config base-url` to manage the saved API base URL, and `config api-key` to inspect or update the API key."
+        ),
+    )
+    config_parser.add_argument("--list", action="store_true", help="Show the full configuration summary")
+    config_sub = config_parser.add_subparsers(dest="config_target")
+
+    config_base_url = config_sub.add_parser(
+        "base-url",
+        help="Show or change the saved API base URL",
+        description="Show the saved API base URL, set it, or clear it.",
+    )
+    config_base_url_group = config_base_url.add_mutually_exclusive_group()
+    config_base_url_group.add_argument("--set", metavar="URL", help="Save this URL for API mode")
+    config_base_url_group.add_argument("--unset", action="store_true", help="Clear the saved API base URL")
+
+    config_api_key = config_sub.add_parser(
+        "api-key",
+        help="Show or change the API key used by relogin/api mode",
+        description=(
+            "Show the current effective API key source and value, or save/clear a managed API key. "
+            "By default the value is masked."
+        ),
+    )
+    config_api_key_group = config_api_key.add_mutually_exclusive_group()
+    config_api_key_group.add_argument("--set", metavar="KEY", help="Save this API key into the selected store")
+    config_api_key_group.add_argument("--prompt", action="store_true", help="Prompt securely for an API key and save it")
+    config_api_key_group.add_argument("--clear", action="store_true", help="Clear the selected managed API-key store")
+    config_api_key_group.add_argument("--show-full", action="store_true", help="Print the full effective API key")
+    config_api_key.add_argument(
+        "--store",
+        choices=["auto", "keychain", "file"],
+        default="auto",
+        help="Select where to save or clear the managed API key",
     )
     sub.add_parser(
         "chatgpt",
@@ -739,13 +911,13 @@ def build_parser() -> argparse.ArgumentParser:
     help_parser = sub.add_parser(
         "help",
         help="Show general help or help for a subcommand",
-        description="Show the top-level help text or help for one specific subcommand, such as `codex-mode help setup`.",
+        description="Show the top-level help text or help for one specific subcommand, such as `codex-mode help config`.",
     )
     help_parser.add_argument("topic", nargs="?")
 
     parser._subcommand_parsers = {
         "status": status_parser,
-        "setup": sub.choices["setup"],
+        "config": config_parser,
         "chatgpt": sub.choices["chatgpt"],
         "api": api_parser,
         "relogin": relogin_parser,
@@ -766,8 +938,8 @@ def main(argv: list[str]) -> int:
     try:
         if args.command in (None, "status"):
             print_status(paths, codex_bin, verbose=getattr(args, "verbose", False))
-        elif args.command == "setup":
-            print_setup(paths)
+        elif args.command == "config":
+            handle_config_command(paths, args)
         elif args.command == "chatgpt":
             switch_chatgpt(paths, codex_bin)
         elif args.command == "api":
@@ -786,9 +958,6 @@ def main(argv: list[str]) -> int:
             if not topic:
                 parser.print_help()
             else:
-                if topic == "setup":
-                    print_setup(paths)
-                    return 0
                 subparser = parser._subcommand_parsers.get(topic)
                 if subparser is None:
                     raise CodexModeError(f"Unknown help topic: {topic}")

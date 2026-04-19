@@ -2,14 +2,14 @@
 
 ## Unreleased
 
-- Added `setup`, `help`, and `update` subcommands
+- Added `config`, `help`, and `update` subcommands
 - Changed `status` to default to a simple summary
 - Added `status --verbose` for detailed diagnostics
 - Hid macOS Keychain diagnostics on non-macOS platforms
 - Improved config parsing and root-level `openai_base_url` insertion
 - Made `update` check local sources first and require `--download` before using the GitHub fallback
-- Expanded `setup` guidance with more concrete examples and workflow notes
-- Changed `help setup` to print the full setup guide
+- Replaced the old `setup` command with `config`, so URL and API-key inspection and edits happen through one command tree
+- Added managed API-key storage with masked display and optional full display
 
 ## 0.1.0 - 2026-04-19
 
