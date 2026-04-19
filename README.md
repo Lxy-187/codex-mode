@@ -12,11 +12,12 @@ Requirements:
 Features:
 
 - `status`: show a simple current-mode summary
-- `status --verbose`: show provider config, expected env key, helper storage, shell env visibility, and GUI env visibility diagnostics
+- `status --verbose`: show legacy snapshot, provider config, expected env key, helper storage, shell env visibility, and GUI env visibility diagnostics
 - `chatgpt`: switch back to saved ChatGPT auth snapshot and remove the managed API provider block
 - `chatgpt --relogin`: run a fresh ChatGPT login and refresh the saved snapshot
-- `api`: switch to API-provider mode by writing a managed `model_provider` block
-- `api --relogin`: re-validate the API key inputs and rewrite the managed provider block
+- `api`: switch to API mode using the default legacy `auth.json` snapshot flow and `openai_base_url`
+- `api --relogin`: force a fresh API login and refresh the saved legacy API snapshot
+- `api --provider-mode`: switch to the optional env-driven provider config mode
 - `api --show-key`: show the current effective API key in masked form
 - `api --show-key-full`: show the full effective API key
 - `api --set-key`: save a helper-managed `XAI_API_KEY` value
@@ -37,6 +38,7 @@ Files managed under `~/.codex`:
 - `auth.json`
 - `config.toml`
 - `auth-profiles/chatgpt.auth.json`
+- `auth-profiles/api.auth.json`
 - `auth-profiles/api.base_url`
 - `auth-profiles/api.key`
 
@@ -75,6 +77,7 @@ Examples:
 ./codex-mode chatgpt --relogin
 ./codex-mode api --base-url https://api.xairouter.com
 ./codex-mode api --relogin
+./codex-mode api --provider-mode --base-url https://api.xairouter.com
 ./codex-mode api --relogin --prompt
 ./codex-mode api --show-key
 ./codex-mode api --show-key-full
@@ -91,6 +94,7 @@ Windows direct usage without install:
 ```powershell
 .\codex-mode.ps1 status
 .\codex-mode.ps1 api --base-url https://api.xairouter.com
+.\codex-mode.ps1 api --provider-mode --base-url https://api.xairouter.com
 .\codex-mode.ps1 chatgpt --relogin
 ```
 
@@ -103,9 +107,12 @@ Notes:
 
 - After switching modes in Codex App, fully quit and reopen the app.
 - `chatgpt` restores a saved login snapshot. If that snapshot has expired, use `chatgpt --relogin`.
-- `api` writes a managed config block like `model_provider = "xai"` plus `[model_providers.xai]`, `wire_api = "responses"`, `requires_openai_auth = false`, and `env_key = "XAI_API_KEY"`.
+- `api` defaults to the legacy `auth.json` snapshot flow. This is the mode that keeps shared chat history with the app.
+- In the default legacy flow, `api` writes `openai_base_url = "..."`, refreshes `auth.json` when needed, and saves the result to `auth-profiles/api.auth.json`.
+- `api --provider-mode` keeps the newer optional provider config block like `model_provider = "xai"` plus `[model_providers.xai]`, `wire_api = "responses"`, `requires_openai_auth = false`, and `env_key = "XAI_API_KEY"`.
 - `api` and `api --relogin` do not prompt for an API key by default. Use `api --prompt-key`, `api --set-key`, or pass `--prompt` explicitly.
-- The managed provider block is inserted idempotently and removed cleanly when you switch back to `chatgpt`.
+- `openai_base_url` insertion/removal is idempotent, so repeated `chatgpt` / `api` switches do not accumulate blank lines.
+- The managed provider block is also inserted idempotently and removed cleanly when you switch back to `chatgpt`.
 - `api --set-key` / `api --prompt-key` save to macOS Keychain by default on macOS, and to `~/.codex/auth-profiles/api.key` on Linux or Windows.
 - `api --clear-key` only clears the selected helper-managed store. It does not modify `XAI_API_KEY`.
 - `status --verbose` tells you three separate things:
@@ -135,6 +142,7 @@ PowerShell:
 ```powershell
 $HOME\bin\codex-mode.ps1
 $HOME\bin\codex-mode.ps1 api --base-url https://api.xairouter.com
+$HOME\bin\codex-mode.ps1 api --provider-mode --base-url https://api.xairouter.com
 $HOME\bin\codex-mode.ps1 api --relogin
 ```
 

@@ -49,6 +49,7 @@ class Paths:
     config_file: pathlib.Path
     profile_dir: pathlib.Path
     chatgpt_auth_file: pathlib.Path
+    api_auth_file: pathlib.Path
     api_base_url_file: pathlib.Path
     api_key_file: pathlib.Path
 
@@ -74,6 +75,7 @@ def build_paths() -> Paths:
         config_file=codex_home / "config.toml",
         profile_dir=codex_home / "auth-profiles",
         chatgpt_auth_file=codex_home / "auth-profiles" / "chatgpt.auth.json",
+        api_auth_file=codex_home / "auth-profiles" / "api.auth.json",
         api_base_url_file=codex_home / "auth-profiles" / "api.base_url",
         api_key_file=codex_home / "auth-profiles" / "api.key",
     )
@@ -383,11 +385,28 @@ def save_current_snapshot(paths: Paths) -> None:
     current_mode = read_auth_mode(paths.auth_file)
     if current_mode == "chatgpt":
         shutil.copy2(paths.auth_file, paths.chatgpt_auth_file)
+    elif current_mode == "apikey":
+        shutil.copy2(paths.auth_file, paths.api_auth_file)
 
 
 def require_file(path: pathlib.Path, message: str) -> None:
     if not path.exists():
         raise CodexModeError(message)
+
+
+def read_file_bytes(path: pathlib.Path) -> bytes | None:
+    if not path.exists():
+        return None
+    return path.read_bytes()
+
+
+def restore_file_bytes(path: pathlib.Path, data: bytes | None) -> None:
+    if data is None:
+        if path.exists():
+            path.unlink()
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
 
 
 def run_codex(codex_bin: str, args: list[str], *, input_text: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -550,7 +569,7 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
     api_key = inspect_api_key_sources(paths)
 
     if api_mode_active:
-        print("Current mode: API key", flush=True)
+        print("Current mode: API key (provider)", flush=True)
     elif auth_mode == "apikey":
         print("Current mode: legacy API auth", flush=True)
     elif auth_mode == "chatgpt":
@@ -567,6 +586,8 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
         print(f"Codex home: {paths.codex_home}", flush=True)
         print(f"Auth file: {'present' if paths.auth_file.exists() else 'missing'}", flush=True)
         print(f"Saved ChatGPT snapshot: {'present' if paths.chatgpt_auth_file.exists() else 'missing'}", flush=True)
+        print(f"Saved legacy API snapshot: {'present' if paths.api_auth_file.exists() else 'missing'}", flush=True)
+        print("Default API switch strategy: legacy auth snapshot", flush=True)
         print(f"API provider config active: {'yes' if api_mode_active else 'no'}", flush=True)
         if auth_mode == "apikey" and not api_mode_active:
             print("Legacy API auth state detected: yes", flush=True)
@@ -735,7 +756,37 @@ def switch_api(
     base_url: str | None,
     refresh_auth: bool,
     prompt_for_key: bool,
+    provider_mode: bool,
 ) -> None:
+    if provider_mode:
+        switch_api_provider(
+            paths,
+            codex_bin,
+            base_url=base_url,
+            refresh_auth=refresh_auth,
+            prompt_for_key=prompt_for_key,
+        )
+    else:
+        switch_api_legacy(
+            paths,
+            codex_bin,
+            base_url=base_url,
+            refresh_auth=refresh_auth,
+            prompt_for_key=prompt_for_key,
+        )
+
+
+def switch_api_provider(
+    paths: Paths,
+    codex_bin: str,
+    *,
+    base_url: str | None,
+    refresh_auth: bool,
+    prompt_for_key: bool,
+) -> None:
+    del codex_bin
+    del refresh_auth
+
     final_base_url = resolve_base_url(paths, base_url)
     if not final_base_url:
         raise CodexModeError("No API base URL configured. Pass `--base-url URL`.")
@@ -756,6 +807,7 @@ def switch_api(
     set_api_provider_config(paths.config_file, final_base_url)
 
     print("Switched Codex to API billing mode.", flush=True)
+    print("API scheme: provider config", flush=True)
     print(f"Configured model_provider = {API_PROVIDER_ID}", flush=True)
     print(f"Configured provider base_url = {final_base_url}", flush=True)
     print(f"Configured provider env_key = {API_PROVIDER_ENV_KEY}", flush=True)
@@ -773,6 +825,71 @@ def switch_api(
         )
 
 
+def switch_api_legacy(
+    paths: Paths,
+    codex_bin: str,
+    *,
+    base_url: str | None,
+    refresh_auth: bool,
+    prompt_for_key: bool,
+) -> None:
+    final_base_url = resolve_base_url(paths, base_url)
+    if not final_base_url:
+        raise CodexModeError("No API base URL configured. Pass `--base-url URL`.")
+
+    ensure_profile_dir(paths)
+    paths.config_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if not refresh_auth and paths.api_auth_file.exists():
+        save_current_snapshot(paths)
+        write_secret_text(paths.api_base_url_file, final_base_url)
+        remove_api_provider_config(paths.config_file)
+        set_openai_base_url(paths.config_file, final_base_url)
+        shutil.copy2(paths.api_auth_file, paths.auth_file)
+        print("Switched Codex to API billing mode.", flush=True)
+        print("API scheme: legacy auth snapshot", flush=True)
+        print(f"Configured openai_base_url = {final_base_url}", flush=True)
+        print("If Codex App is open, fully quit and reopen it.", flush=True)
+        codex_login_status(codex_bin)
+        return
+
+    api_key = resolve_api_key(paths, allow_prompt=prompt_for_key)
+    if not api_key:
+        raise CodexModeError(
+            f"No API key is currently available from managed storage or the {API_PROVIDER_ENV_KEY} environment variable. "
+            "Use `codex-mode api --prompt-key`, `codex-mode api --set-key ...`, "
+            f"set {API_PROVIDER_ENV_KEY}, or rerun with `--prompt`."
+        )
+
+    auth_backup = read_file_bytes(paths.auth_file)
+    config_backup = read_file_bytes(paths.config_file)
+    saved_base_url_backup = read_file_bytes(paths.api_base_url_file)
+
+    try:
+        save_current_snapshot(paths)
+        write_secret_text(paths.api_base_url_file, final_base_url)
+        remove_api_provider_config(paths.config_file)
+        set_openai_base_url(paths.config_file, final_base_url)
+        run_codex(codex_bin, ["login", "--with-api-key"], input_text=f"{api_key}\n")
+        auth_mode = read_auth_mode(paths.auth_file)
+        if auth_mode != "apikey":
+            raise CodexModeError(
+                f"API login completed, but the saved auth mode is '{auth_mode or 'unknown'}', not 'apikey'."
+            )
+        shutil.copy2(paths.auth_file, paths.api_auth_file)
+    except Exception:
+        restore_file_bytes(paths.auth_file, auth_backup)
+        restore_file_bytes(paths.config_file, config_backup)
+        restore_file_bytes(paths.api_base_url_file, saved_base_url_backup)
+        raise
+
+    print("Switched Codex to API billing mode.", flush=True)
+    print("API scheme: legacy auth snapshot", flush=True)
+    print(f"Configured openai_base_url = {final_base_url}", flush=True)
+    print("If Codex App is open, fully quit and reopen it.", flush=True)
+    codex_login_status(codex_bin)
+
+
 def switch_or_relogin_api(
     paths: Paths,
     codex_bin: str,
@@ -780,6 +897,7 @@ def switch_or_relogin_api(
     base_url: str | None,
     relogin: bool,
     prompt_for_key: bool,
+    provider_mode: bool,
 ) -> None:
     switch_api(
         paths,
@@ -787,6 +905,7 @@ def switch_or_relogin_api(
         base_url=base_url,
         refresh_auth=relogin,
         prompt_for_key=prompt_for_key,
+        provider_mode=provider_mode,
     )
 
 
@@ -1002,6 +1121,7 @@ def build_parser() -> argparse.ArgumentParser:
           codex-mode chatgpt --relogin
           codex-mode api --base-url https://api.xairouter.com
           codex-mode api --relogin
+          codex-mode api --provider-mode --base-url https://api.xairouter.com
           codex-mode api --relogin --prompt
           codex-mode api --show-key
           codex-mode api --prompt-key
@@ -1014,6 +1134,11 @@ def build_parser() -> argparse.ArgumentParser:
         API-key lookup order:
           macOS: Keychain -> managed file -> XAI_API_KEY -> interactive prompt
           Windows/Linux: managed file -> XAI_API_KEY -> interactive prompt
+
+        API switching strategy:
+          1. `codex-mode api` defaults to the legacy auth.json snapshot flow and shared chat history
+          2. `codex-mode api --provider-mode` uses the optional env-driven `model_provider = "xai"` config
+          3. `codex-mode chatgpt` restores the saved ChatGPT snapshot and removes API-only config
 
         Update strategy:
           1. Check for a local git repo and use `git pull --ff-only` when found
@@ -1053,16 +1178,21 @@ def build_parser() -> argparse.ArgumentParser:
         "api",
         help="Switch to API-key mode",
         description=(
-            "Switch Codex into API-key mode by writing a managed provider block. "
-            "Optionally set --base-url and use --relogin to force a fresh key validation. "
-            "By default this command does not prompt for an API key."
+            "Switch Codex into API-key mode. By default this uses the legacy auth.json snapshot flow "
+            "and keeps the shared chat-history behavior. Pass --provider-mode to use the optional "
+            "env-driven provider block instead. By default this command does not prompt for an API key."
         ),
     )
     api_parser.add_argument("--base-url")
     api_parser.add_argument(
+        "--provider-mode",
+        action="store_true",
+        help="Use the optional env-driven provider config instead of the default legacy auth snapshot flow",
+    )
+    api_parser.add_argument(
         "--relogin",
         action="store_true",
-        help="Force a fresh API-key validation before rewriting the managed provider block",
+        help="Force a fresh API-key login/validation instead of reusing the saved API snapshot",
     )
     api_parser.add_argument("--prompt", action="store_true", help="Allow a secure prompt for the API key if no stored key is available")
     api_key_group = api_parser.add_mutually_exclusive_group()
@@ -1135,6 +1265,7 @@ def main(argv: list[str]) -> int:
                 base_url=args.base_url,
                 relogin=args.relogin,
                 prompt_for_key=args.prompt,
+                provider_mode=args.provider_mode,
             )
         elif args.command == "update":
             update_from_repo(args.repo, allow_download=args.download, check_only=args.check)

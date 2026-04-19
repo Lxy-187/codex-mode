@@ -17,6 +17,8 @@
 - Made API switching atomic when no API key is available, so failed key validation does not write URL, auth, or config files
 - Changed API mode to write a managed `model_provider = "xai"` block with `wire_api = "responses"`, `requires_openai_auth = false`, and `env_key = "XAI_API_KEY"`
 - Removed the generic `config` subcommand and moved API-key helper management under `api --show-key`, `api --set-key`, `api --prompt-key`, and `api --clear-key`
+- Restored the original legacy API mode as the default `api` behavior, using `openai_base_url` plus `auth.json` / `api.auth.json` snapshots for shared chat history
+- Kept the newer env-driven provider config as an explicit optional path behind `api --provider-mode`
 
 ## 0.1.0 - 2026-04-19
 
