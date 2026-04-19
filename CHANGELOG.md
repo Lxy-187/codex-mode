@@ -13,6 +13,8 @@
 - Fixed Windows config writing to preserve line endings and avoid malformed `config.toml` output
 - Changed `api` and `api --relogin` so they do not block on interactive key prompts unless `--prompt` is explicitly passed
 - Removed the `relogin` subcommand and moved that behavior to `chatgpt --relogin` and `api --relogin`
+- Made `openai_base_url` insertion and removal idempotent so repeated mode switches do not accumulate blank lines
+- Made API switching atomic when no API key is available, so failed key validation does not write URL, auth, or config files
 
 ## 0.1.0 - 2026-04-19
 

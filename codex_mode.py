@@ -173,31 +173,68 @@ def detect_newline(text: str) -> str:
     return "\n"
 
 
+def is_blank_line(line: str) -> bool:
+    return line.strip() == ""
+
+
+def is_table_header_line(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("[") and stripped.endswith("]")
+
+
+def compact_leading_blank_lines(lines: list[str]) -> list[str]:
+    idx = 0
+    while idx < len(lines) and is_blank_line(lines[idx]):
+        idx += 1
+    return lines[idx:]
+
+
 def remove_openai_base_url(config_file: pathlib.Path) -> None:
     text = read_config_text(config_file)
-    new_text = re.sub(r'(?m)^openai_base_url\s*=.*(?:\r?\n)?', "", text)
-    if new_text != text:
-        write_config_text(config_file, new_text)
+    lines = text.splitlines(keepends=True)
+    removed = False
+    new_lines: list[str] = []
+
+    for line in lines:
+        if re.match(r"^\s*openai_base_url\s*=", line):
+            removed = True
+            continue
+        new_lines.append(line)
+
+    if not removed:
+        return
+
+    write_config_text(config_file, "".join(compact_leading_blank_lines(new_lines)))
 
 
 def set_openai_base_url(config_file: pathlib.Path, base_url: str) -> None:
     text = read_config_text(config_file)
     newline = detect_newline(text)
-    text = re.sub(r'(?m)^openai_base_url\s*=.*(?:\r?\n)?', '', text)
-    lines = text.splitlines(keepends=True)
+    original_lines = text.splitlines(keepends=True)
+    lines = [
+        line
+        for line in original_lines
+        if not re.match(r"^\s*openai_base_url\s*=", line)
+    ]
+
+    lines = compact_leading_blank_lines(lines)
     insert_at = len(lines)
     for idx, line in enumerate(lines):
-        if line.lstrip().startswith("["):
+        if is_blank_line(line) or is_table_header_line(line):
             insert_at = idx
             break
 
-    new_lines = lines[:insert_at]
+    before = lines[:insert_at]
+    after = compact_leading_blank_lines(lines[insert_at:])
+
+    new_lines = before
     if new_lines and not new_lines[-1].endswith(("\n", "\r\n")):
         new_lines[-1] = new_lines[-1] + newline
+
     new_lines.append(f'openai_base_url = "{base_url}"{newline}')
-    if insert_at < len(lines) and new_lines and new_lines[-1].strip():
+    if after:
         new_lines.append(newline)
-    new_lines.extend(lines[insert_at:])
+    new_lines.extend(after)
     write_config_text(config_file, "".join(new_lines))
 
 
@@ -544,18 +581,13 @@ def switch_api(
     refresh_auth: bool,
     prompt_for_key: bool,
 ) -> None:
-    ensure_profile_dir(paths)
-    paths.config_file.parent.mkdir(parents=True, exist_ok=True)
-    save_current_snapshot(paths)
-
     final_base_url = resolve_base_url(paths, base_url)
     if not final_base_url:
         raise CodexModeError("No API base URL configured. Pass `--base-url URL`.")
 
-    write_secret_text(paths.api_base_url_file, final_base_url)
-    set_openai_base_url(paths.config_file, final_base_url)
-
-    if refresh_auth or not paths.api_auth_file.exists():
+    needs_auth_refresh = refresh_auth or not paths.api_auth_file.exists()
+    api_key = ""
+    if needs_auth_refresh:
         api_key = resolve_api_key(paths, allow_prompt=prompt_for_key)
         if not api_key:
             raise CodexModeError(
@@ -563,6 +595,15 @@ def switch_api(
                 "Use `codex-mode config api-key --prompt`, `codex-mode config api-key --set ...`, "
                 "or rerun with `--prompt`."
             )
+
+    ensure_profile_dir(paths)
+    paths.config_file.parent.mkdir(parents=True, exist_ok=True)
+    save_current_snapshot(paths)
+
+    write_secret_text(paths.api_base_url_file, final_base_url)
+    set_openai_base_url(paths.config_file, final_base_url)
+
+    if needs_auth_refresh:
         run_codex(codex_bin, ["login", "--with-api-key"], input_text=api_key)
         shutil.copy2(paths.auth_file, paths.api_auth_file)
     else:
