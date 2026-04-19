@@ -66,6 +66,7 @@ Examples:
 ./codex-mode status --verbose
 ./codex-mode setup
 ./codex-mode help api
+./codex-mode help update
 ./codex-mode chatgpt
 ./codex-mode api --base-url https://api.xairouter.com
 ./codex-mode relogin chatgpt
@@ -97,6 +98,9 @@ Notes:
   - you run it inside the cloned repo, or
   - you installed via the bundled install script, which writes a source marker file, or
   - you pass `codex-mode update --repo <path>`
+- `update` behavior:
+  - first try a local repo update with `git pull --ff-only`
+  - if no local repo is found, download from GitHub and reinstall the current copy
 
 ```powershell
 $env:CODEX_BIN = "C:\Path\To\codex.exe"

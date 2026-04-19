@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import io
 import json
 import locale
 import os
@@ -12,13 +13,22 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
+import urllib.error
+import urllib.request
+import zipfile
 from dataclasses import dataclass
 
 
 KEYCHAIN_SERVICE = "codex-openai-api-key"
 REPO_HINT_NAMES = ("codex-mode", "codex-mode-portable")
 SOURCE_MARKER = ".codex-mode-source"
+GITHUB_REPO = "Lxy-187/codex-mode"
+GITHUB_BRANCH = "main"
+GITHUB_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_BRANCH_ARCHIVE_URL = f"https://github.com/{GITHUB_REPO}/archive/refs/heads/{GITHUB_BRANCH}.zip"
+HTTP_USER_AGENT = "codex-mode-updater"
 
 
 class CodexModeError(Exception):
@@ -296,14 +306,23 @@ def print_setup(paths: Paths) -> None:
 
     print("Codex-mode setup guide", flush=True)
     print("", flush=True)
+    print("What this tool manages:", flush=True)
+    print("  - Your saved ChatGPT auth snapshot", flush=True)
+    print("  - Your saved API auth snapshot", flush=True)
+    print("  - The effective API base URL used in API mode", flush=True)
+    print("", flush=True)
     print("ChatGPT mode:", flush=True)
     print("  Use this when you want Codex to bill against your ChatGPT plan.", flush=True)
+    print("  Switch to the saved ChatGPT session:", flush=True)
+    print("    codex-mode chatgpt", flush=True)
     print("  Refresh the login if it has expired:", flush=True)
     print("    codex-mode relogin chatgpt", flush=True)
     print("", flush=True)
     print("API mode:", flush=True)
     print("  Set or update the API-compatible base URL:", flush=True)
     print("    codex-mode api --base-url https://api.xairouter.com", flush=True)
+    print("  Switch to the saved API snapshot without changing the URL:", flush=True)
+    print("    codex-mode api", flush=True)
     print("  Refresh API auth after changing the key:", flush=True)
     print("    codex-mode relogin api", flush=True)
     print("", flush=True)
@@ -328,13 +347,26 @@ def print_setup(paths: Paths) -> None:
         print("     Example: export OPENAI_API_KEY='sk-...'", flush=True)
     print("  3. Interactive prompt if nothing else is configured", flush=True)
     print("", flush=True)
+    print("Recommended workflow:", flush=True)
+    print("  1. Run `codex-mode status` to see the active mode", flush=True)
+    print("  2. Run `codex-mode status --verbose` to inspect URL and key-source details", flush=True)
+    print("  3. Use `codex-mode chatgpt` or `codex-mode api` to switch modes", flush=True)
+    print("  4. If login has expired, use `codex-mode relogin ...`", flush=True)
+    print("", flush=True)
     print("Useful commands:", flush=True)
     print("  codex-mode status", flush=True)
+    print("  codex-mode status --verbose", flush=True)
+    print("  codex-mode help api", flush=True)
     print("  codex-mode chatgpt", flush=True)
     print("  codex-mode api --base-url https://api.xairouter.com", flush=True)
     print("  codex-mode relogin chatgpt", flush=True)
     print("  codex-mode relogin api", flush=True)
     print("  codex-mode update", flush=True)
+    print("", flush=True)
+    print("Notes:", flush=True)
+    print("  - After switching modes in Codex App, fully quit and reopen the app.", flush=True)
+    print("  - `status` is intentionally brief by default. Use `--verbose` when diagnosing problems.", flush=True)
+    print(f"  - `update` prefers a local repo, and falls back to GitHub download from {GITHUB_REPO}.", flush=True)
 
 
 def switch_chatgpt(paths: Paths, codex_bin: str) -> None:
@@ -459,37 +491,99 @@ def find_update_repo(explicit_repo: str | None) -> pathlib.Path:
             return candidate
 
     raise CodexModeError(
-        "Could not find a codex-mode git repo for update. Run from the repo, set CODEX_MODE_REPO, "
-        "or pass `codex-mode update --repo PATH`."
+        "Could not find a local codex-mode git repo."
     )
 
 
-def install_from_repo(repo_dir: pathlib.Path, target_dir: pathlib.Path) -> None:
+def install_from_directory(source_dir: pathlib.Path, target_dir: pathlib.Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(repo_dir / "codex_mode.py", target_dir / "codex_mode.py")
+    shutil.copy2(source_dir / "codex_mode.py", target_dir / "codex_mode.py")
 
     system = current_platform_name()
     if system == "Windows":
-        shutil.copy2(repo_dir / "codex-mode.ps1", target_dir / "codex-mode.ps1")
-        shutil.copy2(repo_dir / "codex-mode.cmd", target_dir / "codex-mode.cmd")
+        shutil.copy2(source_dir / "codex-mode.ps1", target_dir / "codex-mode.ps1")
+        shutil.copy2(source_dir / "codex-mode.cmd", target_dir / "codex-mode.cmd")
     else:
-        shutil.copy2(repo_dir / "codex-mode", target_dir / "codex-mode")
+        shutil.copy2(source_dir / "codex-mode", target_dir / "codex-mode")
         os.chmod(target_dir / "codex-mode", 0o755)
 
 
+def install_from_repo(repo_dir: pathlib.Path, target_dir: pathlib.Path) -> None:
+    install_from_directory(repo_dir, target_dir)
+    (target_dir / SOURCE_MARKER).write_text(str(repo_dir), encoding="utf-8")
+
+
+def download_url_bytes(url: str) -> bytes:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": HTTP_USER_AGENT,
+            "Accept": "application/vnd.github+json, application/json",
+        },
+    )
+    with urllib.request.urlopen(req) as resp:
+        return resp.read()
+
+
+def select_release_zip_url() -> str | None:
+    try:
+        payload = download_url_bytes(GITHUB_RELEASE_API_URL)
+        data = json.loads(payload.decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+    for asset in data.get("assets", []):
+        name = str(asset.get("name", ""))
+        url = str(asset.get("browser_download_url", ""))
+        if name.endswith(".zip") and url:
+            return url
+
+    zipball = str(data.get("zipball_url", "") or "")
+    return zipball or None
+
+
+def find_distribution_root(root_dir: pathlib.Path) -> pathlib.Path:
+    for candidate in root_dir.rglob("codex_mode.py"):
+        parent = candidate.parent
+        if (parent / "README.md").exists():
+            return parent
+    raise CodexModeError("Downloaded archive did not contain a valid codex-mode distribution.")
+
+
+def update_from_github(target_dir: pathlib.Path) -> None:
+    download_url = select_release_zip_url() or GITHUB_BRANCH_ARCHIVE_URL
+    print(f"Downloading update from: {download_url}", flush=True)
+    archive_bytes = download_url_bytes(download_url)
+
+    with tempfile.TemporaryDirectory(prefix="codex-mode-update-") as tmp:
+        tmp_path = pathlib.Path(tmp)
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as zf:
+            zf.extractall(tmp_path)
+        source_dir = find_distribution_root(tmp_path)
+        install_from_directory(source_dir, target_dir)
+        print(f"Downloaded and reinstalled into: {target_dir}", flush=True)
+
+
 def update_from_repo(explicit_repo: str | None) -> None:
-    repo_dir = find_update_repo(explicit_repo)
     script_dir = pathlib.Path(__file__).resolve().parent
     target_dir = script_dir
+    try:
+        repo_dir = find_update_repo(explicit_repo)
+    except CodexModeError:
+        repo_dir = None
 
-    subprocess.run(["git", "-C", str(repo_dir), "pull", "--ff-only"], check=True)
+    if repo_dir is not None:
+        subprocess.run(["git", "-C", str(repo_dir), "pull", "--ff-only"], check=True)
 
-    if repo_dir != target_dir:
-        install_from_repo(repo_dir, target_dir)
-        print(f"Updated from repo: {repo_dir}", flush=True)
-        print(f"Reinstalled into: {target_dir}", flush=True)
-    else:
-        print(f"Updated repo in place: {repo_dir}", flush=True)
+        if repo_dir != target_dir:
+            install_from_repo(repo_dir, target_dir)
+            print(f"Updated from local repo: {repo_dir}", flush=True)
+            print(f"Reinstalled into: {target_dir}", flush=True)
+        else:
+            print(f"Updated repo in place: {repo_dir}", flush=True)
+        return
+
+    update_from_github(target_dir)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -498,7 +592,7 @@ def build_parser() -> argparse.ArgumentParser:
         Codex auth-mode manager.
 
         Use this tool to inspect the current Codex login state, switch between ChatGPT and API-key
-        billing modes, refresh expired logins, and update an installed copy from a cloned repo.
+        billing modes, refresh expired logins, and update an installed copy from a local repo or GitHub.
         """
     ).strip()
     epilog = textwrap.dedent(
@@ -516,6 +610,10 @@ def build_parser() -> argparse.ArgumentParser:
         API-key lookup order:
           macOS: Keychain -> OPENAI_API_KEY -> interactive prompt
           Windows/Linux: OPENAI_API_KEY -> interactive prompt
+
+        Update strategy:
+          1. Prefer a local git repo and run `git pull --ff-only`
+          2. If no local repo is found, download from GitHub and reinstall this copy
         """
     ).strip()
     parser = argparse.ArgumentParser(
@@ -572,7 +670,11 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser = sub.add_parser(
         "update",
         help="Pull the latest repo changes and reinstall this copy when possible",
-        description="Update codex-mode from a cloned git repo. Works best inside the repo, with CODEX_MODE_REPO set, or with --repo PATH.",
+        description=(
+            "Update codex-mode. It first looks for a local git repo and pulls with git. "
+            "If no local repo is available, it downloads the latest GitHub release zip, "
+            "or falls back to the main-branch source archive."
+        ),
     )
     update_parser.add_argument("--repo")
 

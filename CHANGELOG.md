@@ -7,6 +7,8 @@
 - Added `status --verbose` for detailed diagnostics
 - Hid macOS Keychain diagnostics on non-macOS platforms
 - Improved config parsing and root-level `openai_base_url` insertion
+- Made `update` prefer a local repo and fall back to GitHub download and reinstall
+- Expanded `setup` guidance with more concrete examples and workflow notes
 
 ## 0.1.0 - 2026-04-19
 
