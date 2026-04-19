@@ -32,6 +32,15 @@ class Paths:
     api_base_url_file: pathlib.Path
 
 
+@dataclass
+class ApiKeyInspection:
+    keychain_supported: bool
+    keychain_has_value: bool
+    env_var_name: str
+    env_var_has_value: bool
+    effective_source: str
+
+
 def build_paths() -> Paths:
     codex_home = pathlib.Path(os.environ.get("CODEX_HOME", pathlib.Path.home() / ".codex")).expanduser()
     return Paths(
@@ -158,6 +167,28 @@ def read_mac_keychain_key() -> str:
     return proc.stdout.strip()
 
 
+def inspect_api_key_sources() -> ApiKeyInspection:
+    env_var_name = "OPENAI_API_KEY"
+    env_value = os.environ.get(env_var_name, "").strip()
+    keychain_value = read_mac_keychain_key()
+    keychain_supported = platform.system() == "Darwin" and shutil.which("security") is not None
+
+    if keychain_value:
+        effective_source = "macOS Keychain"
+    elif env_value:
+        effective_source = env_var_name
+    else:
+        effective_source = "interactive prompt"
+
+    return ApiKeyInspection(
+        keychain_supported=keychain_supported,
+        keychain_has_value=bool(keychain_value),
+        env_var_name=env_var_name,
+        env_var_has_value=bool(env_value),
+        effective_source=effective_source,
+    )
+
+
 def resolve_api_key() -> str:
     key = read_mac_keychain_key()
     if key:
@@ -180,19 +211,43 @@ def resolve_base_url(paths: Paths, arg_base_url: str | None) -> str:
 
 def print_status(paths: Paths, codex_bin: str) -> None:
     auth_mode = read_auth_mode(paths.auth_file)
-    base_url = read_openai_base_url(paths.config_file)
+    config_base_url = read_openai_base_url(paths.config_file)
+    saved_api_base_url = paths.api_base_url_file.read_text().strip() if paths.api_base_url_file.exists() else ""
+    effective_api_base_url = resolve_base_url(paths, None)
+    api_key = inspect_api_key_sources()
 
     if auth_mode == "chatgpt":
         print("Current mode: ChatGPT", flush=True)
     elif auth_mode == "apikey":
         print("Current mode: API key", flush=True)
-        print(f"Base URL: {base_url or 'not set'}", flush=True)
     elif auth_mode:
         print(f"Current mode: {auth_mode}", flush=True)
-        if base_url:
-            print(f"Base URL: {base_url}", flush=True)
     else:
         print("Current mode: unknown", flush=True)
+
+    print(f"Codex home: {paths.codex_home}", flush=True)
+    print(f"Auth file: {'present' if paths.auth_file.exists() else 'missing'}", flush=True)
+    print(f"Saved ChatGPT snapshot: {'present' if paths.chatgpt_auth_file.exists() else 'missing'}", flush=True)
+    print(f"Saved API snapshot: {'present' if paths.api_auth_file.exists() else 'missing'}", flush=True)
+
+    print(f"Config base URL: {config_base_url or 'not set'}", flush=True)
+    print(f"Saved API base URL: {saved_api_base_url or 'not set'}", flush=True)
+    print(f"Effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
+
+    print("API key sources:", flush=True)
+    if api_key.keychain_supported:
+        print(
+            f"  macOS Keychain ({KEYCHAIN_SERVICE}): {'found' if api_key.keychain_has_value else 'not found'}",
+            flush=True,
+        )
+    else:
+        print("  macOS Keychain: not supported on this platform", flush=True)
+    print(
+        f"  Environment variable {api_key.env_var_name}: {'set' if api_key.env_var_has_value else 'not set'}",
+        flush=True,
+    )
+    print("  Interactive prompt: available on demand", flush=True)
+    print(f"  Effective source if relogin api runs now: {api_key.effective_source}", flush=True)
 
     codex_login_status(codex_bin)
 
