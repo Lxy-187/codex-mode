@@ -15,6 +15,7 @@
 - Removed the `relogin` subcommand and moved that behavior to `chatgpt --relogin` and `api --relogin`
 - Made `openai_base_url` insertion and removal idempotent so repeated mode switches do not accumulate blank lines
 - Made API switching atomic when no API key is available, so failed key validation does not write URL, auth, or config files
+- Changed API mode to write a managed `model_provider = "xai"` block with `wire_api = "responses"`, `requires_openai_auth = false`, and `env_key = "XAI_API_KEY"`
 
 ## 0.1.0 - 2026-04-19
 

@@ -6,6 +6,11 @@ TARGET_DIR=${1:-"$HOME/.local/bin"}
 
 mkdir -p "$TARGET_DIR"
 
+rm -rf \
+  "$TARGET_DIR/__pycache__" \
+  "$TARGET_DIR/codex-use-api" \
+  "$TARGET_DIR/codex-use-chatgpt"
+
 install -m 755 "$SCRIPT_DIR/codex-mode" "$TARGET_DIR/codex-mode"
 install -m 755 "$SCRIPT_DIR/codex_mode.py" "$TARGET_DIR/codex_mode.py"
 printf '%s\n' "$SCRIPT_DIR" > "$TARGET_DIR/.codex-mode-source"

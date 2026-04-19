@@ -5,6 +5,17 @@ $TargetDir = if ($args.Count -gt 0 -and $args[0]) { $args[0] } else { Join-Path 
 
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 
+$LegacyTargets = @(
+    (Join-Path $TargetDir "__pycache__"),
+    (Join-Path $TargetDir "codex-use-api"),
+    (Join-Path $TargetDir "codex-use-chatgpt")
+)
+foreach ($LegacyTarget in $LegacyTargets) {
+    if (Test-Path $LegacyTarget) {
+        Remove-Item -Recurse -Force $LegacyTarget
+    }
+}
+
 Copy-Item (Join-Path $ScriptDir "codex_mode.py") (Join-Path $TargetDir "codex_mode.py") -Force
 Copy-Item (Join-Path $ScriptDir "codex-mode.ps1") (Join-Path $TargetDir "codex-mode.ps1") -Force
 Copy-Item (Join-Path $ScriptDir "codex-mode.cmd") (Join-Path $TargetDir "codex-mode.cmd") -Force

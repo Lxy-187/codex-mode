@@ -29,6 +29,13 @@ GITHUB_BRANCH = "main"
 GITHUB_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_BRANCH_ARCHIVE_URL = f"https://github.com/{GITHUB_REPO}/archive/refs/heads/{GITHUB_BRANCH}.zip"
 HTTP_USER_AGENT = "codex-mode-updater"
+API_PROVIDER_ID = "xai"
+API_PROVIDER_NAME = "OpenAI"
+API_PROVIDER_WIRE_API = "responses"
+API_PROVIDER_ENV_KEY = "XAI_API_KEY"
+API_PROVIDER_REQUIRES_OPENAI_AUTH = "false"
+API_CONFIG_START_COMMENT = "# codex-mode api config start"
+API_CONFIG_END_COMMENT = "# codex-mode api config end"
 
 
 class CodexModeError(Exception):
@@ -189,6 +196,62 @@ def compact_leading_blank_lines(lines: list[str]) -> list[str]:
     return lines[idx:]
 
 
+def collapse_consecutive_blank_lines(lines: list[str]) -> list[str]:
+    collapsed: list[str] = []
+    previous_blank = False
+    for line in lines:
+        blank = is_blank_line(line)
+        if blank and previous_blank:
+            continue
+        collapsed.append(line)
+        previous_blank = blank
+    return compact_leading_blank_lines(collapsed)
+
+
+def read_model_provider(config_file: pathlib.Path) -> str:
+    text = read_config_text(config_file)
+    match = re.search(r'(?m)^model_provider\s*=\s*"([^"]+)"\s*$', text)
+    return match.group(1) if match else ""
+
+
+def read_provider_base_url(config_file: pathlib.Path, provider_id: str) -> str:
+    text = read_config_text(config_file)
+    pattern = (
+        rf"(?ms)^\[model_providers\.{re.escape(provider_id)}\]\s*$"
+        rf"(.*?)(?=^\[|\Z)"
+    )
+    match = re.search(pattern, text)
+    if not match:
+        return ""
+    section_body = match.group(1)
+    value_match = re.search(r'(?m)^\s*base_url\s*=\s*"([^"]+)"\s*$', section_body)
+    return value_match.group(1) if value_match else ""
+
+
+def api_provider_config_is_active(config_file: pathlib.Path) -> bool:
+    text = read_config_text(config_file)
+    return (
+        API_CONFIG_START_COMMENT in text
+        or read_model_provider(config_file) == API_PROVIDER_ID
+        or bool(read_provider_base_url(config_file, API_PROVIDER_ID))
+    )
+
+
+def render_api_provider_block(base_url: str, newline: str) -> list[str]:
+    return [
+        f"{API_CONFIG_START_COMMENT}{newline}",
+        f'model_provider = "{API_PROVIDER_ID}"{newline}',
+        newline,
+        f"[model_providers.{API_PROVIDER_ID}]{newline}",
+        f'name = "{API_PROVIDER_NAME}"{newline}',
+        f'base_url = "{base_url}"{newline}',
+        f'wire_api = "{API_PROVIDER_WIRE_API}"{newline}',
+        f"requires_openai_auth = {API_PROVIDER_REQUIRES_OPENAI_AUTH}{newline}",
+        f'env_key = "{API_PROVIDER_ENV_KEY}"{newline}',
+        f"{API_CONFIG_END_COMMENT}{newline}",
+    ]
+
+
 def remove_openai_base_url(config_file: pathlib.Path) -> None:
     text = read_config_text(config_file)
     lines = text.splitlines(keepends=True)
@@ -204,7 +267,7 @@ def remove_openai_base_url(config_file: pathlib.Path) -> None:
     if not removed:
         return
 
-    write_config_text(config_file, "".join(compact_leading_blank_lines(new_lines)))
+    write_config_text(config_file, "".join(collapse_consecutive_blank_lines(new_lines)))
 
 
 def set_openai_base_url(config_file: pathlib.Path, base_url: str) -> None:
@@ -235,7 +298,86 @@ def set_openai_base_url(config_file: pathlib.Path, base_url: str) -> None:
     if after:
         new_lines.append(newline)
     new_lines.extend(after)
-    write_config_text(config_file, "".join(new_lines))
+    write_config_text(config_file, "".join(collapse_consecutive_blank_lines(new_lines)))
+
+
+def remove_api_provider_config(config_file: pathlib.Path) -> None:
+    text = read_config_text(config_file)
+    lines = text.splitlines(keepends=True)
+    new_lines: list[str] = []
+    in_managed_block = False
+    in_provider_section = False
+    removed = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped == API_CONFIG_START_COMMENT:
+            in_managed_block = True
+            removed = True
+            continue
+        if in_managed_block:
+            removed = True
+            if stripped == API_CONFIG_END_COMMENT:
+                in_managed_block = False
+            continue
+
+        if re.match(rf'^\s*model_provider\s*=\s*"{re.escape(API_PROVIDER_ID)}"\s*$', line):
+            removed = True
+            continue
+
+        if re.match(rf'^\[model_providers\.{re.escape(API_PROVIDER_ID)}\]\s*$', stripped):
+            in_provider_section = True
+            removed = True
+            continue
+        if in_provider_section:
+            if is_table_header_line(line):
+                in_provider_section = False
+            else:
+                removed = True
+                continue
+
+        if in_provider_section:
+            removed = True
+            continue
+
+        new_lines.append(line)
+
+    if not removed:
+        return
+
+    write_config_text(config_file, "".join(collapse_consecutive_blank_lines(new_lines)))
+
+
+def set_api_provider_config(config_file: pathlib.Path, base_url: str) -> None:
+    text = read_config_text(config_file)
+    newline = detect_newline(text)
+    remove_api_provider_config(config_file)
+    remove_openai_base_url(config_file)
+    text = read_config_text(config_file)
+    lines = collapse_consecutive_blank_lines(text.splitlines(keepends=True))
+
+    insert_at = len(lines)
+    for idx, line in enumerate(lines):
+        if is_blank_line(line) or is_table_header_line(line):
+            insert_at = idx
+            break
+
+    before = lines[:insert_at]
+    after = compact_leading_blank_lines(lines[insert_at:])
+    new_lines = before
+
+    if new_lines and not new_lines[-1].endswith(("\n", "\r\n")):
+        new_lines[-1] = new_lines[-1] + newline
+    if new_lines and not is_blank_line(new_lines[-1]):
+        new_lines.append(newline)
+
+    new_lines.extend(render_api_provider_block(base_url, newline))
+    if after:
+        new_lines.append(newline)
+    new_lines.extend(after)
+
+    write_config_text(config_file, "".join(collapse_consecutive_blank_lines(new_lines)))
 
 
 def save_current_snapshot(paths: Paths) -> None:
@@ -322,7 +464,7 @@ def mask_secret(value: str) -> str:
 
 
 def inspect_api_key_sources(paths: Paths) -> ApiKeyInspection:
-    env_var_name = "OPENAI_API_KEY"
+    env_var_name = API_PROVIDER_ENV_KEY
     env_value = os.environ.get(env_var_name, "").strip()
     keychain_value = read_mac_keychain_key()
     file_value = read_managed_api_key(paths)
@@ -363,7 +505,7 @@ def resolve_api_key(paths: Paths, *, allow_prompt: bool) -> str:
     if key:
         return key
 
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    key = os.environ.get(API_PROVIDER_ENV_KEY, "").strip()
     if key:
         return key
 
@@ -378,37 +520,45 @@ def resolve_base_url(paths: Paths, arg_base_url: str | None) -> str:
         return arg_base_url
     if paths.api_base_url_file.exists():
         return paths.api_base_url_file.read_text().strip()
+    provider_base_url = read_provider_base_url(paths.config_file, API_PROVIDER_ID).strip()
+    if provider_base_url:
+        return provider_base_url
     return read_openai_base_url(paths.config_file).strip()
 
 
 def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
     auth_mode = read_auth_mode(paths.auth_file)
+    api_mode_active = api_provider_config_is_active(paths.config_file)
     config_base_url = read_openai_base_url(paths.config_file)
+    provider_base_url = read_provider_base_url(paths.config_file, API_PROVIDER_ID)
     saved_api_base_url = paths.api_base_url_file.read_text().strip() if paths.api_base_url_file.exists() else ""
     effective_api_base_url = resolve_base_url(paths, None)
     api_key = inspect_api_key_sources(paths)
 
-    if auth_mode == "chatgpt":
-        print("Current mode: ChatGPT", flush=True)
-    elif auth_mode == "apikey":
+    if api_mode_active:
         print("Current mode: API key", flush=True)
+    elif auth_mode == "chatgpt":
+        print("Current mode: ChatGPT", flush=True)
     elif auth_mode:
         print(f"Current mode: {auth_mode}", flush=True)
     else:
         print("Current mode: unknown", flush=True)
 
-    if auth_mode == "apikey":
+    if api_mode_active:
         print(f"Effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
 
     if verbose:
         print(f"Codex home: {paths.codex_home}", flush=True)
         print(f"Auth file: {'present' if paths.auth_file.exists() else 'missing'}", flush=True)
         print(f"Saved ChatGPT snapshot: {'present' if paths.chatgpt_auth_file.exists() else 'missing'}", flush=True)
-        print(f"Saved API snapshot: {'present' if paths.api_auth_file.exists() else 'missing'}", flush=True)
+        print(f"API provider config active: {'yes' if api_mode_active else 'no'}", flush=True)
 
         print(f"Config base URL: {config_base_url or 'not set'}", flush=True)
+        print(f"Provider base URL: {provider_base_url or 'not set'}", flush=True)
         print(f"Saved API base URL: {saved_api_base_url or 'not set'}", flush=True)
         print(f"Effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
+        print(f"Model provider: {read_model_provider(paths.config_file) or 'not set'}", flush=True)
+        print(f"Provider env key: {API_PROVIDER_ENV_KEY}", flush=True)
 
         print("API key sources:", flush=True)
         if api_key.platform_name == "Darwin":
@@ -427,24 +577,34 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
         print("  Interactive prompt: available on demand", flush=True)
         print(f"  Effective source if `api --relogin` runs now: {api_key.effective_source}", flush=True)
 
+    if api_mode_active:
+        if verbose:
+            print("Codex CLI login status is skipped in API mode because provider auth is env-driven.", flush=True)
+        return
+
     codex_login_status(codex_bin)
 
 
 def print_config_list(paths: Paths) -> None:
     auth_mode = read_auth_mode(paths.auth_file) or "unknown"
+    api_mode_active = api_provider_config_is_active(paths.config_file)
     config_base_url = read_openai_base_url(paths.config_file)
+    provider_base_url = read_provider_base_url(paths.config_file, API_PROVIDER_ID)
     saved_api_base_url = read_secret_text(paths.api_base_url_file)
     effective_api_base_url = resolve_base_url(paths, None)
     api_key = inspect_api_key_sources(paths)
 
     print("Codex-mode configuration", flush=True)
-    print(f"Current mode: {auth_mode}", flush=True)
+    print(f"Current mode: {'apikey' if api_mode_active else auth_mode}", flush=True)
     print(f"Codex home: {paths.codex_home}", flush=True)
     print("", flush=True)
     print("Base URL", flush=True)
-    print(f"  Config file value: {config_base_url or 'not set'}", flush=True)
+    print(f"  Legacy config value: {config_base_url or 'not set'}", flush=True)
+    print(f"  Provider config value: {provider_base_url or 'not set'}", flush=True)
     print(f"  Saved API value: {saved_api_base_url or 'not set'}", flush=True)
     print(f"  Effective API value: {effective_api_base_url or 'not set'}", flush=True)
+    print(f"  Model provider: {read_model_provider(paths.config_file) or 'not set'}", flush=True)
+    print(f"  Provider env key: {API_PROVIDER_ENV_KEY}", flush=True)
     print("", flush=True)
     print("API key", flush=True)
     print(f"  Effective source: {api_key.effective_source}", flush=True)
@@ -462,13 +622,13 @@ def print_config_list(paths: Paths) -> None:
 
 
 def show_base_url_config(paths: Paths) -> None:
-    auth_mode = read_auth_mode(paths.auth_file)
+    api_mode_active = api_provider_config_is_active(paths.config_file)
     saved_api_base_url = read_secret_text(paths.api_base_url_file)
     effective_api_base_url = resolve_base_url(paths, None)
 
     print(f"Saved API base URL: {saved_api_base_url or 'not set'}", flush=True)
     print(f"Effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
-    if auth_mode == "apikey":
+    if api_mode_active:
         print("Current mode uses the API base URL now.", flush=True)
     else:
         print("Current mode is not API. The saved value will apply on the next API switch.", flush=True)
@@ -480,11 +640,11 @@ def set_base_url_config(paths: Paths, base_url: str) -> None:
         raise CodexModeError("Base URL is empty.")
 
     write_secret_text(paths.api_base_url_file, normalized)
-    if read_auth_mode(paths.auth_file) == "apikey":
-        set_openai_base_url(paths.config_file, normalized)
+    if api_provider_config_is_active(paths.config_file):
+        set_api_provider_config(paths.config_file, normalized)
 
     print(f"Saved API base URL: {normalized}", flush=True)
-    if read_auth_mode(paths.auth_file) == "apikey":
+    if api_provider_config_is_active(paths.config_file):
         print("Applied the new base URL to the active API mode config.", flush=True)
     else:
         print("Saved for the next API mode switch. ChatGPT mode was left unchanged.", flush=True)
@@ -492,6 +652,7 @@ def set_base_url_config(paths: Paths, base_url: str) -> None:
 
 def unset_base_url_config(paths: Paths) -> None:
     remove_secret_file(paths.api_base_url_file)
+    remove_api_provider_config(paths.config_file)
     remove_openai_base_url(paths.config_file)
     print("Cleared the saved API base URL.", flush=True)
 
@@ -559,6 +720,7 @@ def switch_chatgpt(paths: Paths, codex_bin: str) -> None:
     require_file(paths.chatgpt_auth_file, "No saved ChatGPT session snapshot found. Use `chatgpt --relogin`.")
 
     shutil.copy2(paths.chatgpt_auth_file, paths.auth_file)
+    remove_api_provider_config(paths.config_file)
     remove_openai_base_url(paths.config_file)
 
     print("Switched Codex to ChatGPT billing mode.", flush=True)
@@ -585,34 +747,37 @@ def switch_api(
     if not final_base_url:
         raise CodexModeError("No API base URL configured. Pass `--base-url URL`.")
 
-    needs_auth_refresh = refresh_auth or not paths.api_auth_file.exists()
-    api_key = ""
-    if needs_auth_refresh:
-        api_key = resolve_api_key(paths, allow_prompt=prompt_for_key)
-        if not api_key:
-            raise CodexModeError(
-                "No API key is currently available from managed storage or environment variables. "
-                "Use `codex-mode config api-key --prompt`, `codex-mode config api-key --set ...`, "
-                "or rerun with `--prompt`."
-            )
+    api_key = resolve_api_key(paths, allow_prompt=prompt_for_key)
+    if not api_key:
+        raise CodexModeError(
+            f"No API key is currently available from managed storage or the {API_PROVIDER_ENV_KEY} environment variable. "
+            "Use `codex-mode config api-key --prompt`, `codex-mode config api-key --set ...`, "
+            f"set {API_PROVIDER_ENV_KEY}, or rerun with `--prompt`."
+        )
 
     ensure_profile_dir(paths)
     paths.config_file.parent.mkdir(parents=True, exist_ok=True)
     save_current_snapshot(paths)
 
     write_secret_text(paths.api_base_url_file, final_base_url)
-    set_openai_base_url(paths.config_file, final_base_url)
-
-    if needs_auth_refresh:
-        run_codex(codex_bin, ["login", "--with-api-key"], input_text=api_key)
-        shutil.copy2(paths.auth_file, paths.api_auth_file)
-    else:
-        shutil.copy2(paths.api_auth_file, paths.auth_file)
+    set_api_provider_config(paths.config_file, final_base_url)
 
     print("Switched Codex to API billing mode.", flush=True)
-    print(f"Configured openai_base_url = {final_base_url}", flush=True)
+    print(f"Configured model_provider = {API_PROVIDER_ID}", flush=True)
+    print(f"Configured provider base_url = {final_base_url}", flush=True)
+    print(f"Configured provider env_key = {API_PROVIDER_ENV_KEY}", flush=True)
     print("If Codex App is open, fully quit and reopen it.", flush=True)
-    codex_login_status(codex_bin)
+    if os.environ.get(API_PROVIDER_ENV_KEY, "").strip() == "":
+        print(
+            f"Note: the active shell does not currently expose {API_PROVIDER_ENV_KEY}. "
+            "Make sure your app session can read that variable.",
+            flush=True,
+        )
+    if platform.system() == "Darwin":
+        print(
+            f"Make sure {API_PROVIDER_ENV_KEY} is available to GUI apps in your login session.",
+            flush=True,
+        )
 
 
 def switch_or_relogin_api(
@@ -634,6 +799,7 @@ def switch_or_relogin_api(
 
 def relogin_chatgpt(paths: Paths, codex_bin: str) -> None:
     ensure_profile_dir(paths)
+    remove_api_provider_config(paths.config_file)
     remove_openai_base_url(paths.config_file)
     run_codex(codex_bin, ["login"])
 
@@ -885,8 +1051,8 @@ def build_parser() -> argparse.ArgumentParser:
           codex-mode update --repo C:\\path\\to\\codex-mode
 
         API-key lookup order:
-          macOS: Keychain -> managed file -> OPENAI_API_KEY -> interactive prompt
-          Windows/Linux: managed file -> OPENAI_API_KEY -> interactive prompt
+          macOS: Keychain -> managed file -> XAI_API_KEY -> interactive prompt
+          Windows/Linux: managed file -> XAI_API_KEY -> interactive prompt
 
         Update strategy:
           1. Check for a local git repo and use `git pull --ff-only` when found
@@ -951,7 +1117,7 @@ def build_parser() -> argparse.ArgumentParser:
         "chatgpt",
         help="Switch to the saved ChatGPT login snapshot",
         description=(
-            "Restore the saved ChatGPT auth snapshot and remove any API-only openai_base_url override. "
+            "Restore the saved ChatGPT auth snapshot and remove the managed API provider config block. "
             "Use --relogin to run a fresh `codex login` and refresh the saved snapshot."
         ),
     )
@@ -965,7 +1131,8 @@ def build_parser() -> argparse.ArgumentParser:
         "api",
         help="Switch to API-key mode",
         description=(
-            "Switch Codex into API-key mode. Optionally set --base-url and use --relogin to force a fresh key read. "
+            "Switch Codex into API-key mode by writing a managed provider block. "
+            "Optionally set --base-url and use --relogin to force a fresh key validation. "
             "By default this command does not prompt for an API key."
         ),
     )
@@ -973,7 +1140,7 @@ def build_parser() -> argparse.ArgumentParser:
     api_parser.add_argument(
         "--relogin",
         action="store_true",
-        help="Force a fresh API-key login and refresh the saved API snapshot",
+        help="Force a fresh API-key validation before rewriting the managed provider block",
     )
     api_parser.add_argument("--prompt", action="store_true", help="Allow a secure prompt for the API key if no stored key is available")
 
