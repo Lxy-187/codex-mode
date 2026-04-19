@@ -18,7 +18,7 @@ Features:
 - `api`: switch to API-key mode
 - `relogin chatgpt`: perform a fresh `codex login` and refresh the ChatGPT snapshot
 - `relogin api`: refresh API-key auth using the configured rules
-- `update`: pull the latest repo changes and reinstall the active copy when possible
+- `update`: update from a local repo, with optional GitHub download fallback
 - `help`: show top-level help or help for one subcommand, for example `codex-mode help setup`
 
 API-key lookup order:
@@ -71,7 +71,9 @@ Examples:
 ./codex-mode api --base-url https://api.xairouter.com
 ./codex-mode relogin chatgpt
 ./codex-mode relogin api
+./codex-mode update --check
 ./codex-mode update
+./codex-mode update --download
 ```
 
 Windows direct usage without install:
@@ -99,8 +101,10 @@ Notes:
   - you installed via the bundled install script, which writes a source marker file, or
   - you pass `codex-mode update --repo <path>`
 - `update` behavior:
-  - first try a local repo update with `git pull --ff-only`
-  - if no local repo is found, download from GitHub and reinstall the current copy
+  - `codex-mode update --check` only inspects the available update path
+  - `codex-mode update` updates from a local repo when one is found
+  - if no local repo is found, it stops before downloading anything
+  - use `codex-mode update --download` to allow a GitHub download and reinstall fallback
 
 ```powershell
 $env:CODEX_BIN = "C:\Path\To\codex.exe"

@@ -306,67 +306,95 @@ def print_setup(paths: Paths) -> None:
 
     print("Codex-mode setup guide", flush=True)
     print("", flush=True)
-    print("What this tool manages:", flush=True)
-    print("  - Your saved ChatGPT auth snapshot", flush=True)
-    print("  - Your saved API auth snapshot", flush=True)
-    print("  - The effective API base URL used in API mode", flush=True)
+    print("Purpose", flush=True)
+    print("  codex-mode manages three things:", flush=True)
+    print("  - your saved ChatGPT login snapshot", flush=True)
+    print("  - your saved API-key login snapshot", flush=True)
+    print("  - the root-level `openai_base_url` used only in API mode", flush=True)
     print("", flush=True)
-    print("ChatGPT mode:", flush=True)
-    print("  Use this when you want Codex to bill against your ChatGPT plan.", flush=True)
-    print("  Switch to the saved ChatGPT session:", flush=True)
-    print("    codex-mode chatgpt", flush=True)
-    print("  Refresh the login if it has expired:", flush=True)
-    print("    codex-mode relogin chatgpt", flush=True)
+    print("Mode model", flush=True)
+    print("  - `chatgpt`: use your ChatGPT account session", flush=True)
+    print("  - `api`: use `codex login --with-api-key` plus an API-compatible base URL", flush=True)
+    print("  - switching modes does not create a fresh login unless you use `relogin`", flush=True)
     print("", flush=True)
-    print("API mode:", flush=True)
-    print("  Set or update the API-compatible base URL:", flush=True)
-    print("    codex-mode api --base-url https://api.xairouter.com", flush=True)
-    print("  Switch to the saved API snapshot without changing the URL:", flush=True)
-    print("    codex-mode api", flush=True)
-    print("  Refresh API auth after changing the key:", flush=True)
-    print("    codex-mode relogin api", flush=True)
+    print("Current configuration", flush=True)
+    print(f"  - effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
+    print(f"  - codex home: {paths.codex_home}", flush=True)
     print("", flush=True)
-    print(f"Current effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
+    print("Common setup flows", flush=True)
+    print("  1. Use ChatGPT billing", flush=True)
+    print("     - switch to the saved ChatGPT session: `codex-mode chatgpt`", flush=True)
+    print("     - if that session is expired: `codex-mode relogin chatgpt`", flush=True)
+    print("  2. Use API billing with a custom gateway", flush=True)
+    print("     - set or update the base URL and switch mode:", flush=True)
+    print("       `codex-mode api --base-url https://api.xairouter.com`", flush=True)
+    print("     - if the API key changed, refresh auth: `codex-mode relogin api`", flush=True)
+    print("  3. Inspect what is active right now", flush=True)
+    print("     - quick summary: `codex-mode status`", flush=True)
+    print("     - full diagnostics: `codex-mode status --verbose`", flush=True)
     print("", flush=True)
-    print("API key sources for this platform:", flush=True)
+    print("How to provide the API key", flush=True)
     if api_key.platform_name == "Darwin":
+        print("  Preferred order on macOS:", flush=True)
         print(f"  1. macOS Keychain service `{KEYCHAIN_SERVICE}`", flush=True)
         print(
-            "     Example: security add-generic-password -U -a \"$USER\" -s "
+            "     Save once: security add-generic-password -U -a \"$USER\" -s "
             f"{KEYCHAIN_SERVICE} -w 'sk-...'",
             flush=True,
         )
+        print("     Read current value: security find-generic-password -a \"$USER\" -s "
+              f"{KEYCHAIN_SERVICE} -w", flush=True)
         print(f"  2. Environment variable `{api_key.env_var_name}`", flush=True)
-        print("     Example: export OPENAI_API_KEY='sk-...'", flush=True)
+        print("     Temporary shell example: export OPENAI_API_KEY='sk-...'", flush=True)
+        print("  3. Interactive prompt if nothing else is configured", flush=True)
     elif api_key.platform_name == "Windows":
+        print("  Preferred order on Windows:", flush=True)
         print(f"  1. Environment variable `{api_key.env_var_name}`", flush=True)
         print("     PowerShell example: $env:OPENAI_API_KEY = 'sk-...'", flush=True)
         print("     Persisted example: setx OPENAI_API_KEY \"sk-...\"", flush=True)
+        print("  2. Interactive prompt if nothing else is configured", flush=True)
     else:
+        print("  Preferred order on Linux:", flush=True)
         print(f"  1. Environment variable `{api_key.env_var_name}`", flush=True)
-        print("     Example: export OPENAI_API_KEY='sk-...'", flush=True)
-    print("  3. Interactive prompt if nothing else is configured", flush=True)
+        print("     Shell example: export OPENAI_API_KEY='sk-...'", flush=True)
+        print("  2. Interactive prompt if nothing else is configured", flush=True)
     print("", flush=True)
-    print("Recommended workflow:", flush=True)
-    print("  1. Run `codex-mode status` to see the active mode", flush=True)
-    print("  2. Run `codex-mode status --verbose` to inspect URL and key-source details", flush=True)
-    print("  3. Use `codex-mode chatgpt` or `codex-mode api` to switch modes", flush=True)
-    print("  4. If login has expired, use `codex-mode relogin ...`", flush=True)
+    print("Examples", flush=True)
+    print("  - first-time API setup:", flush=True)
+    print("    `codex-mode api --base-url https://api.xairouter.com --refresh-auth`", flush=True)
+    print("  - switch back to account billing:", flush=True)
+    print("    `codex-mode chatgpt`", flush=True)
+    print("  - refresh an expired ChatGPT session:", flush=True)
+    print("    `codex-mode relogin chatgpt`", flush=True)
+    print("  - refresh API auth after rotating the key:", flush=True)
+    print("    `codex-mode relogin api --base-url https://api.xairouter.com`", flush=True)
+    print("  - see where the API key would come from right now:", flush=True)
+    print("    `codex-mode status --verbose`", flush=True)
     print("", flush=True)
-    print("Useful commands:", flush=True)
+    print("Operational notes", flush=True)
+    print("  - `chatgpt` and `api` restore saved snapshots when possible", flush=True)
+    print("  - `relogin ...` performs a fresh login and refreshes the saved snapshot", flush=True)
+    print("  - after switching modes in Codex App, fully quit and reopen the app", flush=True)
+    print("  - `openai_base_url` is written at TOML root level, not inside a marketplace block", flush=True)
+    print("", flush=True)
+    print("Useful commands", flush=True)
     print("  codex-mode status", flush=True)
     print("  codex-mode status --verbose", flush=True)
+    print("  codex-mode setup", flush=True)
     print("  codex-mode help api", flush=True)
+    print("  codex-mode help update", flush=True)
     print("  codex-mode chatgpt", flush=True)
     print("  codex-mode api --base-url https://api.xairouter.com", flush=True)
     print("  codex-mode relogin chatgpt", flush=True)
     print("  codex-mode relogin api", flush=True)
     print("  codex-mode update", flush=True)
+    print("  codex-mode update --download", flush=True)
     print("", flush=True)
-    print("Notes:", flush=True)
-    print("  - After switching modes in Codex App, fully quit and reopen the app.", flush=True)
-    print("  - `status` is intentionally brief by default. Use `--verbose` when diagnosing problems.", flush=True)
-    print(f"  - `update` prefers a local repo, and falls back to GitHub download from {GITHUB_REPO}.", flush=True)
+    print("Update behavior", flush=True)
+    print("  - `codex-mode update` checks for a usable local repo and updates from it if found", flush=True)
+    print("  - if no local repo is found, it stops and tells you how to continue", flush=True)
+    print("  - use `codex-mode update --download` to allow a GitHub download fallback", flush=True)
+    print(f"  - remote fallback source: {GITHUB_REPO}", flush=True)
 
 
 def switch_chatgpt(paths: Paths, codex_bin: str) -> None:
@@ -564,7 +592,7 @@ def update_from_github(target_dir: pathlib.Path) -> None:
         print(f"Downloaded and reinstalled into: {target_dir}", flush=True)
 
 
-def update_from_repo(explicit_repo: str | None) -> None:
+def update_from_repo(explicit_repo: str | None, *, allow_download: bool, check_only: bool) -> None:
     script_dir = pathlib.Path(__file__).resolve().parent
     target_dir = script_dir
     try:
@@ -573,6 +601,11 @@ def update_from_repo(explicit_repo: str | None) -> None:
         repo_dir = None
 
     if repo_dir is not None:
+        if check_only:
+            print(f"Local repo found: {repo_dir}", flush=True)
+            print("Remote download fallback: available but not needed", flush=True)
+            return
+
         subprocess.run(["git", "-C", str(repo_dir), "pull", "--ff-only"], check=True)
 
         if repo_dir != target_dir:
@@ -583,6 +616,20 @@ def update_from_repo(explicit_repo: str | None) -> None:
             print(f"Updated repo in place: {repo_dir}", flush=True)
         return
 
+    print("No local codex-mode repo found.", flush=True)
+    print(f"Install target: {target_dir}", flush=True)
+    if check_only:
+        print("Remote download fallback: available", flush=True)
+        print("Run `codex-mode update --download` to fetch and reinstall from GitHub.", flush=True)
+        return
+
+    if not allow_download:
+        raise CodexModeError(
+            "No local repo found, so update stopped before downloading. "
+            "Run `codex-mode update --check` to inspect sources or `codex-mode update --download` to allow GitHub download."
+        )
+
+    print("Proceeding with remote download fallback.", flush=True)
     update_from_github(target_dir)
 
 
@@ -600,11 +647,14 @@ def build_parser() -> argparse.ArgumentParser:
         Common examples:
           codex-mode status
           codex-mode setup
+          codex-mode help setup
           codex-mode chatgpt
           codex-mode api --base-url https://api.xairouter.com
           codex-mode relogin chatgpt
           codex-mode relogin api
           codex-mode update
+          codex-mode update --check
+          codex-mode update --download
           codex-mode update --repo C:\\path\\to\\codex-mode
 
         API-key lookup order:
@@ -612,8 +662,9 @@ def build_parser() -> argparse.ArgumentParser:
           Windows/Linux: OPENAI_API_KEY -> interactive prompt
 
         Update strategy:
-          1. Prefer a local git repo and run `git pull --ff-only`
-          2. If no local repo is found, download from GitHub and reinstall this copy
+          1. Check for a local git repo and use `git pull --ff-only` when found
+          2. If no local repo is found, stop by default
+          3. Use `codex-mode update --download` to allow GitHub fallback
         """
     ).strip()
     parser = argparse.ArgumentParser(
@@ -669,14 +720,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     update_parser = sub.add_parser(
         "update",
-        help="Pull the latest repo changes and reinstall this copy when possible",
+        help="Update from a local repo, with optional GitHub download fallback",
         description=(
-            "Update codex-mode. It first looks for a local git repo and pulls with git. "
-            "If no local repo is available, it downloads the latest GitHub release zip, "
-            "or falls back to the main-branch source archive."
+            "Update codex-mode. By default it checks for a local git repo and updates from that repo only. "
+            "If no local repo is found, it stops before downloading anything. "
+            "Use --download to allow a GitHub fallback through the latest release zip, "
+            "or the main-branch source archive if no release zip is available."
         ),
     )
     update_parser.add_argument("--repo")
+    update_parser.add_argument("--check", action="store_true", help="Only inspect update sources; do not change anything")
+    update_parser.add_argument(
+        "--download",
+        action="store_true",
+        help="Allow a GitHub download fallback when no local repo is found",
+    )
 
     help_parser = sub.add_parser(
         "help",
@@ -722,12 +780,15 @@ def main(argv: list[str]) -> int:
             else:
                 parser.error("unsupported relogin target")
         elif args.command == "update":
-            update_from_repo(args.repo)
+            update_from_repo(args.repo, allow_download=args.download, check_only=args.check)
         elif args.command == "help":
             topic = args.topic
             if not topic:
                 parser.print_help()
             else:
+                if topic == "setup":
+                    print_setup(paths)
+                    return 0
                 subparser = parser._subcommand_parsers.get(topic)
                 if subparser is None:
                     raise CodexModeError(f"Unknown help topic: {topic}")
