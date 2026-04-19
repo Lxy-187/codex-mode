@@ -138,12 +138,14 @@ def read_config_text(config_file: pathlib.Path) -> str:
 
 def write_config_text(config_file: pathlib.Path, text: str) -> None:
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    config_file.write_text(text, encoding="utf-8")
+    with config_file.open("w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
 
 
-def write_secret_text(secret_file: pathlib.Path, value: str) -> None:
+def write_secret_text(secret_file: pathlib.Path, value: str, *, newline: str = "\n") -> None:
     secret_file.parent.mkdir(parents=True, exist_ok=True)
-    secret_file.write_text(value.strip() + "\n", encoding="utf-8")
+    with secret_file.open("w", encoding="utf-8", newline="") as fh:
+        fh.write(value.strip() + newline)
     if os.name != "nt":
         os.chmod(secret_file, 0o600)
 
@@ -165,16 +167,23 @@ def read_openai_base_url(config_file: pathlib.Path) -> str:
     return match.group(1) if match else ""
 
 
+def detect_newline(text: str) -> str:
+    if "\r\n" in text:
+        return "\r\n"
+    return "\n"
+
+
 def remove_openai_base_url(config_file: pathlib.Path) -> None:
     text = read_config_text(config_file)
-    new_text = re.sub(r'(?m)^openai_base_url\s*=.*\n?', "", text)
+    new_text = re.sub(r'(?m)^openai_base_url\s*=.*(?:\r?\n)?', "", text)
     if new_text != text:
         write_config_text(config_file, new_text)
 
 
 def set_openai_base_url(config_file: pathlib.Path, base_url: str) -> None:
     text = read_config_text(config_file)
-    text = re.sub(r'(?m)^openai_base_url\s*=.*\n?', '', text)
+    newline = detect_newline(text)
+    text = re.sub(r'(?m)^openai_base_url\s*=.*(?:\r?\n)?', '', text)
     lines = text.splitlines(keepends=True)
     insert_at = len(lines)
     for idx, line in enumerate(lines):
@@ -183,11 +192,11 @@ def set_openai_base_url(config_file: pathlib.Path, base_url: str) -> None:
             break
 
     new_lines = lines[:insert_at]
-    if new_lines and not new_lines[-1].endswith("\n"):
-        new_lines[-1] = new_lines[-1] + "\n"
-    new_lines.append(f'openai_base_url = "{base_url}"\n')
+    if new_lines and not new_lines[-1].endswith(("\n", "\r\n")):
+        new_lines[-1] = new_lines[-1] + newline
+    new_lines.append(f'openai_base_url = "{base_url}"{newline}')
     if insert_at < len(lines) and new_lines and new_lines[-1].strip():
-        new_lines.append("\n")
+        new_lines.append(newline)
     new_lines.extend(lines[insert_at:])
     write_config_text(config_file, "".join(new_lines))
 
@@ -308,7 +317,7 @@ def inspect_api_key_sources(paths: Paths) -> ApiKeyInspection:
     )
 
 
-def resolve_api_key(paths: Paths) -> str:
+def resolve_api_key(paths: Paths, *, allow_prompt: bool) -> str:
     key = read_mac_keychain_key()
     if key:
         return key
@@ -321,7 +330,10 @@ def resolve_api_key(paths: Paths) -> str:
     if key:
         return key
 
-    return getpass.getpass("OpenAI API key: ").strip()
+    if allow_prompt:
+        return getpass.getpass("OpenAI API key: ").strip()
+
+    return ""
 
 
 def resolve_base_url(paths: Paths, arg_base_url: str | None) -> str:
@@ -517,7 +529,14 @@ def switch_chatgpt(paths: Paths, codex_bin: str) -> None:
     codex_login_status(codex_bin)
 
 
-def switch_api(paths: Paths, codex_bin: str, *, base_url: str | None, refresh_auth: bool) -> None:
+def switch_api(
+    paths: Paths,
+    codex_bin: str,
+    *,
+    base_url: str | None,
+    refresh_auth: bool,
+    prompt_for_key: bool,
+) -> None:
     ensure_profile_dir(paths)
     paths.config_file.parent.mkdir(parents=True, exist_ok=True)
     save_current_snapshot(paths)
@@ -530,9 +549,13 @@ def switch_api(paths: Paths, codex_bin: str, *, base_url: str | None, refresh_au
     set_openai_base_url(paths.config_file, final_base_url)
 
     if refresh_auth or not paths.api_auth_file.exists():
-        api_key = resolve_api_key(paths)
+        api_key = resolve_api_key(paths, allow_prompt=prompt_for_key)
         if not api_key:
-            raise CodexModeError("API key is empty.")
+            raise CodexModeError(
+                "No API key is currently available from managed storage or environment variables. "
+                "Use `codex-mode config api-key --prompt`, `codex-mode config api-key --set ...`, "
+                "or rerun with `--prompt`."
+            )
         run_codex(codex_bin, ["login", "--with-api-key"], input_text=api_key)
         shutil.copy2(paths.auth_file, paths.api_auth_file)
     else:
@@ -788,8 +811,10 @@ def build_parser() -> argparse.ArgumentParser:
           codex-mode config api-key --prompt
           codex-mode chatgpt
           codex-mode api --base-url https://api.xairouter.com
+          codex-mode api --base-url https://api.xairouter.com --prompt
           codex-mode relogin chatgpt
           codex-mode relogin api
+          codex-mode relogin api --prompt
           codex-mode update
           codex-mode update --check
           codex-mode update --download
@@ -867,10 +892,14 @@ def build_parser() -> argparse.ArgumentParser:
     api_parser = sub.add_parser(
         "api",
         help="Switch to API-key mode",
-        description="Switch Codex into API-key mode. Optionally set --base-url and use --refresh-auth to force a fresh key read.",
+        description=(
+            "Switch Codex into API-key mode. Optionally set --base-url and use --refresh-auth to force a fresh key read. "
+            "By default this command does not prompt for an API key."
+        ),
     )
     api_parser.add_argument("--base-url")
     api_parser.add_argument("--refresh-auth", action="store_true")
+    api_parser.add_argument("--prompt", action="store_true", help="Allow a secure prompt for the API key if no stored key is available")
 
     relogin_parser = sub.add_parser(
         "relogin",
@@ -886,9 +915,13 @@ def build_parser() -> argparse.ArgumentParser:
     relogin_api = relogin_sub.add_parser(
         "api",
         help="Refresh API-key auth",
-        description="Force a fresh API-key login using the configured source order for your platform.",
+        description=(
+            "Force a fresh API-key login using the configured source order for your platform. "
+            "By default this command does not prompt for an API key."
+        ),
     )
     relogin_api.add_argument("--base-url")
+    relogin_api.add_argument("--prompt", action="store_true", help="Allow a secure prompt for the API key if no stored key is available")
 
     update_parser = sub.add_parser(
         "update",
@@ -943,12 +976,24 @@ def main(argv: list[str]) -> int:
         elif args.command == "chatgpt":
             switch_chatgpt(paths, codex_bin)
         elif args.command == "api":
-            switch_api(paths, codex_bin, base_url=args.base_url, refresh_auth=args.refresh_auth)
+            switch_api(
+                paths,
+                codex_bin,
+                base_url=args.base_url,
+                refresh_auth=args.refresh_auth,
+                prompt_for_key=args.prompt,
+            )
         elif args.command == "relogin":
             if args.target == "chatgpt":
                 relogin_chatgpt(paths, codex_bin)
             elif args.target == "api":
-                switch_api(paths, codex_bin, base_url=args.base_url, refresh_auth=True)
+                switch_api(
+                    paths,
+                    codex_bin,
+                    base_url=args.base_url,
+                    refresh_auth=True,
+                    prompt_for_key=args.prompt,
+                )
             else:
                 parser.error("unsupported relogin target")
         elif args.command == "update":

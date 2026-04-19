@@ -78,8 +78,10 @@ Examples:
 ./codex-mode help update
 ./codex-mode chatgpt
 ./codex-mode api --base-url https://api.xairouter.com
+./codex-mode api --base-url https://api.xairouter.com --prompt
 ./codex-mode relogin chatgpt
 ./codex-mode relogin api
+./codex-mode relogin api --prompt
 ./codex-mode update --check
 ./codex-mode update
 ./codex-mode update --download
@@ -103,6 +105,7 @@ Notes:
 - After switching modes in Codex App, fully quit and reopen the app.
 - `chatgpt` restores a saved login snapshot. If that snapshot has expired, use `relogin chatgpt`.
 - `api` restores a saved API login snapshot if present. Use `relogin api` when the key changes.
+- `api` and `relogin api` do not prompt for an API key by default. Use `config api-key --prompt` to save one first, or pass `--prompt` explicitly.
 - `config api-key --set` saves to macOS Keychain by default on macOS, and to `~/.codex/auth-profiles/api.key` on Linux or Windows.
 - `config api-key --clear` only clears the selected managed store. It does not modify `OPENAI_API_KEY`.
 - If `codex` is not on PATH, set `CODEX_BIN` before running. Example on Windows PowerShell:
