@@ -2,13 +2,13 @@
 
 ## Unreleased
 
-- Added `config`, `help`, and `update` subcommands
+- Added `help` and `update` subcommands
 - Changed `status` to default to a simple summary
 - Added `status --verbose` for detailed diagnostics
 - Hid macOS Keychain diagnostics on non-macOS platforms
 - Improved config parsing and root-level `openai_base_url` insertion
 - Made `update` check local sources first and require `--download` before using the GitHub fallback
-- Replaced the old `setup` command with `config`, so URL and API-key inspection and edits happen through one command tree
+- Replaced the old `setup` command with a stricter two-mode model: `chatgpt` and `api`
 - Added managed API-key storage with masked display and optional full display
 - Fixed Windows config writing to preserve line endings and avoid malformed `config.toml` output
 - Changed `api` and `api --relogin` so they do not block on interactive key prompts unless `--prompt` is explicitly passed
@@ -16,6 +16,7 @@
 - Made `openai_base_url` insertion and removal idempotent so repeated mode switches do not accumulate blank lines
 - Made API switching atomic when no API key is available, so failed key validation does not write URL, auth, or config files
 - Changed API mode to write a managed `model_provider = "xai"` block with `wire_api = "responses"`, `requires_openai_auth = false`, and `env_key = "XAI_API_KEY"`
+- Removed the generic `config` subcommand and moved API-key helper management under `api --show-key`, `api --set-key`, `api --prompt-key`, and `api --clear-key`
 
 ## 0.1.0 - 2026-04-19
 

@@ -12,16 +12,18 @@ Requirements:
 Features:
 
 - `status`: show a simple current-mode summary
-- `status --verbose`: show base URL, snapshot, and API-key source diagnostics
-- `config --list`: show the saved API URL, effective API URL, and API-key source summary
-- `config base-url`: show, set, or clear the saved API base URL
-- `config api-key`: show, set, prompt for, or clear the managed API key
+- `status --verbose`: show provider config, expected env key, helper storage, shell env visibility, and GUI env visibility diagnostics
 - `chatgpt`: switch back to saved ChatGPT auth snapshot and remove the managed API provider block
 - `chatgpt --relogin`: run a fresh ChatGPT login and refresh the saved snapshot
 - `api`: switch to API-provider mode by writing a managed `model_provider` block
 - `api --relogin`: re-validate the API key inputs and rewrite the managed provider block
+- `api --show-key`: show the current effective API key in masked form
+- `api --show-key-full`: show the full effective API key
+- `api --set-key`: save a helper-managed `XAI_API_KEY` value
+- `api --prompt-key`: prompt for and save a helper-managed `XAI_API_KEY` value
+- `api --clear-key`: clear the helper-managed `XAI_API_KEY` value
 - `update`: update from a local repo, with optional GitHub download fallback
-- `help`: show top-level help or help for one subcommand, for example `codex-mode help config`
+- `help`: show top-level help or help for one subcommand, for example `codex-mode help api`
 
 API-key lookup order:
 
@@ -67,12 +69,6 @@ Examples:
 ./codex-mode
 ./codex-mode status
 ./codex-mode status --verbose
-./codex-mode config --list
-./codex-mode config base-url
-./codex-mode config base-url --set https://api.xairouter.com
-./codex-mode config api-key
-./codex-mode config api-key --show-full
-./codex-mode config api-key --prompt
 ./codex-mode help api
 ./codex-mode help update
 ./codex-mode chatgpt
@@ -80,6 +76,11 @@ Examples:
 ./codex-mode api --base-url https://api.xairouter.com
 ./codex-mode api --relogin
 ./codex-mode api --relogin --prompt
+./codex-mode api --show-key
+./codex-mode api --show-key-full
+./codex-mode api --set-key sk-...
+./codex-mode api --prompt-key
+./codex-mode api --clear-key
 ./codex-mode update --check
 ./codex-mode update
 ./codex-mode update --download
@@ -103,10 +104,14 @@ Notes:
 - After switching modes in Codex App, fully quit and reopen the app.
 - `chatgpt` restores a saved login snapshot. If that snapshot has expired, use `chatgpt --relogin`.
 - `api` writes a managed config block like `model_provider = "xai"` plus `[model_providers.xai]`, `wire_api = "responses"`, `requires_openai_auth = false`, and `env_key = "XAI_API_KEY"`.
-- `api` and `api --relogin` do not prompt for an API key by default. Use `config api-key --prompt` to save one first, or pass `--prompt` explicitly.
+- `api` and `api --relogin` do not prompt for an API key by default. Use `api --prompt-key`, `api --set-key`, or pass `--prompt` explicitly.
 - The managed provider block is inserted idempotently and removed cleanly when you switch back to `chatgpt`.
-- `config api-key --set` saves to macOS Keychain by default on macOS, and to `~/.codex/auth-profiles/api.key` on Linux or Windows.
-- `config api-key --clear` only clears the selected managed store. It does not modify `XAI_API_KEY`.
+- `api --set-key` / `api --prompt-key` save to macOS Keychain by default on macOS, and to `~/.codex/auth-profiles/api.key` on Linux or Windows.
+- `api --clear-key` only clears the selected helper-managed store. It does not modify `XAI_API_KEY`.
+- `status --verbose` tells you three separate things:
+  - which env key the provider expects
+  - whether local helper storage exists
+  - whether the current shell or GUI session can actually read `XAI_API_KEY`
 - If `codex` is not on PATH, set `CODEX_BIN` before running. Example on Windows PowerShell:
 - `update` works best when:
   - you run it inside the cloned repo, or

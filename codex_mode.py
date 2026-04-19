@@ -49,7 +49,6 @@ class Paths:
     config_file: pathlib.Path
     profile_dir: pathlib.Path
     chatgpt_auth_file: pathlib.Path
-    api_auth_file: pathlib.Path
     api_base_url_file: pathlib.Path
     api_key_file: pathlib.Path
 
@@ -62,6 +61,7 @@ class ApiKeyInspection:
     file_has_value: bool
     env_var_name: str
     env_var_has_value: bool
+    gui_env_var_has_value: bool
     effective_source: str
     effective_value: str
 
@@ -74,7 +74,6 @@ def build_paths() -> Paths:
         config_file=codex_home / "config.toml",
         profile_dir=codex_home / "auth-profiles",
         chatgpt_auth_file=codex_home / "auth-profiles" / "chatgpt.auth.json",
-        api_auth_file=codex_home / "auth-profiles" / "api.auth.json",
         api_base_url_file=codex_home / "auth-profiles" / "api.base_url",
         api_key_file=codex_home / "auth-profiles" / "api.key",
     )
@@ -384,8 +383,6 @@ def save_current_snapshot(paths: Paths) -> None:
     current_mode = read_auth_mode(paths.auth_file)
     if current_mode == "chatgpt":
         shutil.copy2(paths.auth_file, paths.chatgpt_auth_file)
-    elif current_mode == "apikey":
-        shutil.copy2(paths.auth_file, paths.api_auth_file)
 
 
 def require_file(path: pathlib.Path, message: str) -> None:
@@ -413,6 +410,21 @@ def read_mac_keychain_key() -> str:
         return ""
     proc = subprocess.run(
         ["security", "find-generic-password", "-a", getpass.getuser(), "-s", KEYCHAIN_SERVICE, "-w"],
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def read_launchctl_env(var_name: str) -> str:
+    if platform.system() != "Darwin":
+        return ""
+    if not shutil.which("launchctl"):
+        return ""
+    proc = subprocess.run(
+        ["launchctl", "getenv", var_name],
         text=True,
         capture_output=True,
     )
@@ -466,6 +478,7 @@ def mask_secret(value: str) -> str:
 def inspect_api_key_sources(paths: Paths) -> ApiKeyInspection:
     env_var_name = API_PROVIDER_ENV_KEY
     env_value = os.environ.get(env_var_name, "").strip()
+    gui_env_value = read_launchctl_env(env_var_name)
     keychain_value = read_mac_keychain_key()
     file_value = read_managed_api_key(paths)
     platform_name = current_platform_name()
@@ -491,6 +504,7 @@ def inspect_api_key_sources(paths: Paths) -> ApiKeyInspection:
         file_has_value=bool(file_value),
         env_var_name=env_var_name,
         env_var_has_value=bool(env_value),
+        gui_env_var_has_value=bool(gui_env_value),
         effective_source=effective_source,
         effective_value=effective_value,
     )
@@ -537,6 +551,8 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
 
     if api_mode_active:
         print("Current mode: API key", flush=True)
+    elif auth_mode == "apikey":
+        print("Current mode: legacy API auth", flush=True)
     elif auth_mode == "chatgpt":
         print("Current mode: ChatGPT", flush=True)
     elif auth_mode:
@@ -552,30 +568,60 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
         print(f"Auth file: {'present' if paths.auth_file.exists() else 'missing'}", flush=True)
         print(f"Saved ChatGPT snapshot: {'present' if paths.chatgpt_auth_file.exists() else 'missing'}", flush=True)
         print(f"API provider config active: {'yes' if api_mode_active else 'no'}", flush=True)
+        if auth_mode == "apikey" and not api_mode_active:
+            print("Legacy API auth state detected: yes", flush=True)
 
         print(f"Config base URL: {config_base_url or 'not set'}", flush=True)
         print(f"Provider base URL: {provider_base_url or 'not set'}", flush=True)
         print(f"Saved API base URL: {saved_api_base_url or 'not set'}", flush=True)
         print(f"Effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
         print(f"Model provider: {read_model_provider(paths.config_file) or 'not set'}", flush=True)
-        print(f"Provider env key: {API_PROVIDER_ENV_KEY}", flush=True)
-
-        print("API key sources:", flush=True)
+        print("", flush=True)
+        print("Provider auth model:", flush=True)
+        print(f"  Expected provider env key: {API_PROVIDER_ENV_KEY}", flush=True)
+        print(f"  requires_openai_auth: {API_PROVIDER_REQUIRES_OPENAI_AUTH}", flush=True)
+        print("Local helper availability:", flush=True)
         if api_key.platform_name == "Darwin":
             print(
-                f"  macOS Keychain ({KEYCHAIN_SERVICE}): {'found' if api_key.keychain_has_value else 'not found'}",
+                f"  macOS Keychain ({KEYCHAIN_SERVICE}): {'set' if api_key.keychain_has_value else 'not set'}",
                 flush=True,
             )
         print(
             f"  Managed file ({paths.api_key_file}): {'set' if api_key.file_has_value else 'not set'}",
             flush=True,
         )
+        print("Environment visibility:", flush=True)
         print(
-            f"  Environment variable {api_key.env_var_name}: {'set' if api_key.env_var_has_value else 'not set'}",
+            f"  Current shell {api_key.env_var_name}: {'set' if api_key.env_var_has_value else 'not set'}",
             flush=True,
         )
-        print("  Interactive prompt: available on demand", flush=True)
-        print(f"  Effective source if `api --relogin` runs now: {api_key.effective_source}", flush=True)
+        if api_key.platform_name == "Darwin":
+            print(
+                f"  GUI session {api_key.env_var_name} via launchctl: {'set' if api_key.gui_env_var_has_value else 'not set'}",
+                flush=True,
+            )
+        else:
+            print(f"  GUI session {api_key.env_var_name}: platform check not available", flush=True)
+        print(f"  CLI can read provider env now: {'yes' if api_key.env_var_has_value else 'no'}", flush=True)
+        if api_key.platform_name == "Darwin":
+            print(
+                f"  GUI apps can read provider env now: {'yes' if api_key.gui_env_var_has_value else 'no'}",
+                flush=True,
+            )
+        else:
+            print("  GUI apps can read provider env now: platform check not available", flush=True)
+        print("", flush=True)
+        print(f"Helper resolution if `api` validates now: {api_key.effective_source}", flush=True)
+        if (api_key.keychain_has_value or api_key.file_has_value) and not api_key.env_var_has_value:
+            print(
+                "Note: a local helper key exists, but the provider env variable is not visible in the current shell.",
+                flush=True,
+            )
+        if api_key.platform_name == "Darwin" and (api_key.keychain_has_value or api_key.file_has_value) and not api_key.gui_env_var_has_value:
+            print(
+                "Note: a local helper key exists, but GUI apps still cannot read XAI_API_KEY from launchctl.",
+                flush=True,
+            )
 
     if api_mode_active:
         if verbose:
@@ -583,78 +629,6 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
         return
 
     codex_login_status(codex_bin)
-
-
-def print_config_list(paths: Paths) -> None:
-    auth_mode = read_auth_mode(paths.auth_file) or "unknown"
-    api_mode_active = api_provider_config_is_active(paths.config_file)
-    config_base_url = read_openai_base_url(paths.config_file)
-    provider_base_url = read_provider_base_url(paths.config_file, API_PROVIDER_ID)
-    saved_api_base_url = read_secret_text(paths.api_base_url_file)
-    effective_api_base_url = resolve_base_url(paths, None)
-    api_key = inspect_api_key_sources(paths)
-
-    print("Codex-mode configuration", flush=True)
-    print(f"Current mode: {'apikey' if api_mode_active else auth_mode}", flush=True)
-    print(f"Codex home: {paths.codex_home}", flush=True)
-    print("", flush=True)
-    print("Base URL", flush=True)
-    print(f"  Legacy config value: {config_base_url or 'not set'}", flush=True)
-    print(f"  Provider config value: {provider_base_url or 'not set'}", flush=True)
-    print(f"  Saved API value: {saved_api_base_url or 'not set'}", flush=True)
-    print(f"  Effective API value: {effective_api_base_url or 'not set'}", flush=True)
-    print(f"  Model provider: {read_model_provider(paths.config_file) or 'not set'}", flush=True)
-    print(f"  Provider env key: {API_PROVIDER_ENV_KEY}", flush=True)
-    print("", flush=True)
-    print("API key", flush=True)
-    print(f"  Effective source: {api_key.effective_source}", flush=True)
-    print(f"  Effective value: {mask_secret(api_key.effective_value)}", flush=True)
-    if api_key.platform_name == "Darwin":
-        print(
-            f"  macOS Keychain ({KEYCHAIN_SERVICE}): {'set' if api_key.keychain_has_value else 'not set'}",
-            flush=True,
-        )
-    print(f"  Managed file ({paths.api_key_file}): {'set' if api_key.file_has_value else 'not set'}", flush=True)
-    print(
-        f"  Environment variable {api_key.env_var_name}: {'set' if api_key.env_var_has_value else 'not set'}",
-        flush=True,
-    )
-
-
-def show_base_url_config(paths: Paths) -> None:
-    api_mode_active = api_provider_config_is_active(paths.config_file)
-    saved_api_base_url = read_secret_text(paths.api_base_url_file)
-    effective_api_base_url = resolve_base_url(paths, None)
-
-    print(f"Saved API base URL: {saved_api_base_url or 'not set'}", flush=True)
-    print(f"Effective API base URL: {effective_api_base_url or 'not set'}", flush=True)
-    if api_mode_active:
-        print("Current mode uses the API base URL now.", flush=True)
-    else:
-        print("Current mode is not API. The saved value will apply on the next API switch.", flush=True)
-
-
-def set_base_url_config(paths: Paths, base_url: str) -> None:
-    normalized = base_url.strip()
-    if not normalized:
-        raise CodexModeError("Base URL is empty.")
-
-    write_secret_text(paths.api_base_url_file, normalized)
-    if api_provider_config_is_active(paths.config_file):
-        set_api_provider_config(paths.config_file, normalized)
-
-    print(f"Saved API base URL: {normalized}", flush=True)
-    if api_provider_config_is_active(paths.config_file):
-        print("Applied the new base URL to the active API mode config.", flush=True)
-    else:
-        print("Saved for the next API mode switch. ChatGPT mode was left unchanged.", flush=True)
-
-
-def unset_base_url_config(paths: Paths) -> None:
-    remove_secret_file(paths.api_base_url_file)
-    remove_api_provider_config(paths.config_file)
-    remove_openai_base_url(paths.config_file)
-    print("Cleared the saved API base URL.", flush=True)
 
 
 def default_api_key_store() -> str:
@@ -711,6 +685,25 @@ def clear_api_key_config(paths: Paths, *, store: str) -> None:
     print("Environment variables are not modified by codex-mode.", flush=True)
 
 
+def handle_api_key_management(paths: Paths, args: argparse.Namespace) -> bool:
+    if args.show_key:
+        show_api_key_config(paths, show_full=False)
+        return True
+    if args.show_key_full:
+        show_api_key_config(paths, show_full=True)
+        return True
+    if args.set_key is not None:
+        set_api_key_config(paths, api_key=args.set_key, store=args.store)
+        return True
+    if args.prompt_key:
+        set_api_key_config(paths, api_key=getpass.getpass("OpenAI API key: "), store=args.store)
+        return True
+    if args.clear_key:
+        clear_api_key_config(paths, store=args.store)
+        return True
+    return False
+
+
 def switch_chatgpt(paths: Paths, codex_bin: str) -> None:
     ensure_profile_dir(paths)
     if not paths.auth_file.exists() and not paths.chatgpt_auth_file.exists():
@@ -751,7 +744,7 @@ def switch_api(
     if not api_key:
         raise CodexModeError(
             f"No API key is currently available from managed storage or the {API_PROVIDER_ENV_KEY} environment variable. "
-            "Use `codex-mode config api-key --prompt`, `codex-mode config api-key --set ...`, "
+            "Use `codex-mode api --prompt-key`, `codex-mode api --set-key ...`, "
             f"set {API_PROVIDER_ENV_KEY}, or rerun with `--prompt`."
         )
 
@@ -991,37 +984,6 @@ def update_from_repo(explicit_repo: str | None, *, allow_download: bool, check_o
     update_from_github(target_dir)
 
 
-def handle_config_command(paths: Paths, args: argparse.Namespace) -> None:
-    if getattr(args, "list", False):
-        print_config_list(paths)
-        return
-
-    if args.config_target in (None, "base-url"):
-        if args.config_target is None:
-            print_config_list(paths)
-            return
-        if args.set is not None:
-            set_base_url_config(paths, args.set)
-        elif args.unset:
-            unset_base_url_config(paths)
-        else:
-            show_base_url_config(paths)
-        return
-
-    if args.config_target == "api-key":
-        if args.set is not None:
-            set_api_key_config(paths, api_key=args.set, store=args.store)
-        elif args.prompt:
-            set_api_key_config(paths, api_key=getpass.getpass("OpenAI API key: "), store=args.store)
-        elif args.clear:
-            clear_api_key_config(paths, store=args.store)
-        else:
-            show_api_key_config(paths, show_full=args.show_full)
-        return
-
-    raise CodexModeError("Unsupported config target.")
-
-
 def build_parser() -> argparse.ArgumentParser:
     description = textwrap.dedent(
         """
@@ -1035,16 +997,15 @@ def build_parser() -> argparse.ArgumentParser:
         """
         Common examples:
           codex-mode status
-          codex-mode config --list
-          codex-mode config base-url --set https://api.xairouter.com
-          codex-mode config api-key
-          codex-mode config api-key --show-full
-          codex-mode config api-key --prompt
+          codex-mode status --verbose
           codex-mode chatgpt
           codex-mode chatgpt --relogin
           codex-mode api --base-url https://api.xairouter.com
           codex-mode api --relogin
           codex-mode api --relogin --prompt
+          codex-mode api --show-key
+          codex-mode api --prompt-key
+          codex-mode api --clear-key
           codex-mode update
           codex-mode update --check
           codex-mode update --download
@@ -1074,45 +1035,6 @@ def build_parser() -> argparse.ArgumentParser:
         description="Show the current Codex auth mode. Use --verbose for base URL, snapshot, and key-source diagnostics.",
     )
     status_parser.add_argument("-v", "--verbose", action="store_true", help="Show detailed diagnostics")
-    config_parser = sub.add_parser(
-        "config",
-        help="View or modify the saved API base URL and API key settings",
-        description=(
-            "Inspect or change codex-mode configuration. Use `config --list` for a full summary, "
-            "`config base-url` to manage the saved API base URL, and `config api-key` to inspect or update the API key."
-        ),
-    )
-    config_parser.add_argument("--list", action="store_true", help="Show the full configuration summary")
-    config_sub = config_parser.add_subparsers(dest="config_target")
-
-    config_base_url = config_sub.add_parser(
-        "base-url",
-        help="Show or change the saved API base URL",
-        description="Show the saved API base URL, set it, or clear it.",
-    )
-    config_base_url_group = config_base_url.add_mutually_exclusive_group()
-    config_base_url_group.add_argument("--set", metavar="URL", help="Save this URL for API mode")
-    config_base_url_group.add_argument("--unset", action="store_true", help="Clear the saved API base URL")
-
-    config_api_key = config_sub.add_parser(
-        "api-key",
-        help="Show or change the API key used by API mode",
-        description=(
-            "Show the current effective API key source and value, or save/clear a managed API key. "
-            "By default the value is masked."
-        ),
-    )
-    config_api_key_group = config_api_key.add_mutually_exclusive_group()
-    config_api_key_group.add_argument("--set", metavar="KEY", help="Save this API key into the selected store")
-    config_api_key_group.add_argument("--prompt", action="store_true", help="Prompt securely for an API key and save it")
-    config_api_key_group.add_argument("--clear", action="store_true", help="Clear the selected managed API-key store")
-    config_api_key_group.add_argument("--show-full", action="store_true", help="Print the full effective API key")
-    config_api_key.add_argument(
-        "--store",
-        choices=["auto", "keychain", "file"],
-        default="auto",
-        help="Select where to save or clear the managed API key",
-    )
     chatgpt_parser = sub.add_parser(
         "chatgpt",
         help="Switch to the saved ChatGPT login snapshot",
@@ -1143,6 +1065,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force a fresh API-key validation before rewriting the managed provider block",
     )
     api_parser.add_argument("--prompt", action="store_true", help="Allow a secure prompt for the API key if no stored key is available")
+    api_key_group = api_parser.add_mutually_exclusive_group()
+    api_key_group.add_argument("--show-key", action="store_true", help="Show the current effective API key in masked form")
+    api_key_group.add_argument("--show-key-full", action="store_true", help="Show the full effective API key")
+    api_key_group.add_argument("--set-key", metavar="KEY", help="Save a helper-managed XAI_API_KEY value")
+    api_key_group.add_argument("--prompt-key", action="store_true", help="Prompt securely for an XAI_API_KEY value and save it")
+    api_key_group.add_argument("--clear-key", action="store_true", help="Clear the selected helper-managed XAI_API_KEY value")
+    api_parser.add_argument(
+        "--store",
+        choices=["auto", "keychain", "file"],
+        default="auto",
+        help="Select where to save or clear the helper-managed XAI_API_KEY value",
+    )
 
     update_parser = sub.add_parser(
         "update",
@@ -1165,13 +1099,12 @@ def build_parser() -> argparse.ArgumentParser:
     help_parser = sub.add_parser(
         "help",
         help="Show general help or help for a subcommand",
-        description="Show the top-level help text or help for one specific subcommand, such as `codex-mode help config`.",
+        description="Show the top-level help text or help for one specific subcommand, such as `codex-mode help api`.",
     )
     help_parser.add_argument("topic", nargs="?")
 
     parser._subcommand_parsers = {
         "status": status_parser,
-        "config": config_parser,
         "chatgpt": chatgpt_parser,
         "api": api_parser,
         "update": update_parser,
@@ -1191,11 +1124,11 @@ def main(argv: list[str]) -> int:
     try:
         if args.command in (None, "status"):
             print_status(paths, codex_bin, verbose=getattr(args, "verbose", False))
-        elif args.command == "config":
-            handle_config_command(paths, args)
         elif args.command == "chatgpt":
             switch_or_relogin_chatgpt(paths, codex_bin, relogin=args.relogin)
         elif args.command == "api":
+            if handle_api_key_management(paths, args):
+                return 0
             switch_or_relogin_api(
                 paths,
                 codex_bin,
