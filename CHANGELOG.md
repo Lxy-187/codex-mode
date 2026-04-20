@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+
+## 0.1.1 - 2026-04-20
+
 - Added `help` and `update` subcommands
 - Changed `status` to default to a simple summary
 - Added `status --verbose` for detailed diagnostics
