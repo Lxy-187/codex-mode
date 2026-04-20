@@ -23,6 +23,7 @@
 - Added API-group management commands for listing groups, selecting the default group, showing/importing auth snapshots, and saving group metadata
 - Changed legacy API snapshot handling so the current API group is tracked and restored per group instead of using one shared `api.auth.json`
 - Added top-level `--version` / `-v` support and install-time version file copying
+- Added `release.py` to manage `VERSION`, roll `CHANGELOG` releases forward, and generate zip archives under `dist/`
 
 ## 0.1.0 - 2026-04-19
 

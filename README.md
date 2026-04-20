@@ -32,6 +32,7 @@ Features:
 - `api --clear-key`: clear the helper-managed `XAI_API_KEY` value
 - `update`: update from a local repo, with optional GitHub download fallback
 - `help`: show top-level help or help for one subcommand, for example `codex-mode help api`
+- `release.py`: prepare releases by updating `VERSION`, moving `CHANGELOG` entries, and generating a zip archive
 
 API-key lookup order:
 
@@ -76,6 +77,22 @@ install.cmd
 %USERPROFILE%\bin\codex-mode.cmd status
 ```
 
+Release workflow:
+
+```bash
+python3 ./release.py show
+python3 ./release.py prepare 0.1.1
+python3 ./release.py package
+python3 ./release.py release 0.1.1
+```
+
+What it does:
+
+- `show`: prints the current `VERSION`
+- `prepare <version>`: updates `VERSION` and moves the current `## Unreleased` section into `## <version> - <today>`
+- `package`: creates `dist/codex-mode-v<version>.zip`
+- `release <version>`: runs `prepare` and `package` together
+
 Examples:
 
 ```bash
@@ -106,6 +123,10 @@ Examples:
 ./codex-mode update --check
 ./codex-mode update
 ./codex-mode update --download
+python3 ./release.py show
+python3 ./release.py prepare 0.1.1
+python3 ./release.py package
+python3 ./release.py release 0.1.1
 ```
 
 Windows direct usage without install:
@@ -155,6 +176,7 @@ Notes:
   - if no local repo is found, it stops before downloading anything
   - use `codex-mode update --download` to allow a GitHub download and reinstall fallback
 - after installation on a new device, prefer `codex-mode update` over manually re-running `git pull` and `install.ps1` / `install.sh`
+- release packaging excludes `.git`, `__pycache__`, `dist`, `release`, and `*.pyc`
 
 ```powershell
 $env:CODEX_BIN = "C:\Path\To\codex.exe"
