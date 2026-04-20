@@ -13,11 +13,13 @@ rm -rf \
 
 install -m 755 "$SCRIPT_DIR/codex-mode" "$TARGET_DIR/codex-mode"
 install -m 755 "$SCRIPT_DIR/codex_mode.py" "$TARGET_DIR/codex_mode.py"
+install -m 644 "$SCRIPT_DIR/VERSION" "$TARGET_DIR/VERSION"
 printf '%s\n' "$SCRIPT_DIR" > "$TARGET_DIR/.codex-mode-source"
 
 printf 'Installed:\n'
 printf '  %s\n' "$TARGET_DIR/codex-mode"
 printf '  %s\n' "$TARGET_DIR/codex_mode.py"
+printf '  %s\n' "$TARGET_DIR/VERSION"
 printf '  %s\n' "$TARGET_DIR/.codex-mode-source"
 
 case ":${PATH:-}:" in

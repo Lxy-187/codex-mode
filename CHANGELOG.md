@@ -22,6 +22,7 @@
 - Added multiple named API groups with separate `base_url`, helper-managed API keys, and `auth.json` snapshots
 - Added API-group management commands for listing groups, selecting the default group, showing/importing auth snapshots, and saving group metadata
 - Changed legacy API snapshot handling so the current API group is tracked and restored per group instead of using one shared `api.auth.json`
+- Added top-level `--version` / `-v` support and install-time version file copying
 
 ## 0.1.0 - 2026-04-19
 

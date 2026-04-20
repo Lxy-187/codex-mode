@@ -43,6 +43,16 @@ class CodexModeError(Exception):
     pass
 
 
+def read_program_version() -> str:
+    version_file = pathlib.Path(__file__).resolve().with_name("VERSION")
+    if not version_file.exists():
+        return "unknown"
+    try:
+        return version_file.read_text(encoding="utf-8").strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
 @dataclass
 class Paths:
     codex_home: pathlib.Path
@@ -1500,6 +1510,7 @@ def update_from_repo(explicit_repo: str | None, *, allow_download: bool, check_o
 
 
 def build_parser() -> argparse.ArgumentParser:
+    program_version = read_program_version()
     description = textwrap.dedent(
         """
         Codex auth-mode manager.
@@ -1554,6 +1565,13 @@ def build_parser() -> argparse.ArgumentParser:
         description=description,
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {program_version}",
+        help="Show the installed codex-mode version and exit",
     )
     sub = parser.add_subparsers(dest="command")
 

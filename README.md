@@ -11,6 +11,7 @@ Requirements:
 
 Features:
 
+- `--version` / `-v`: show the installed `codex-mode` version
 - `status`: show a simple current-mode summary
 - `status --verbose`: show legacy snapshots, API groups, provider config, expected env keys, helper storage, shell env visibility, and GUI env visibility diagnostics
 - `chatgpt`: switch back to saved ChatGPT auth snapshot and remove the managed API provider block
@@ -79,6 +80,7 @@ Examples:
 
 ```bash
 ./codex-mode
+./codex-mode --version
 ./codex-mode status
 ./codex-mode status --verbose
 ./codex-mode help api
