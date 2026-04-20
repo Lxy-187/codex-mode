@@ -12,11 +12,17 @@ Requirements:
 Features:
 
 - `status`: show a simple current-mode summary
-- `status --verbose`: show legacy snapshot, provider config, expected env key, helper storage, shell env visibility, and GUI env visibility diagnostics
+- `status --verbose`: show legacy snapshots, API groups, provider config, expected env keys, helper storage, shell env visibility, and GUI env visibility diagnostics
 - `chatgpt`: switch back to saved ChatGPT auth snapshot and remove the managed API provider block
 - `chatgpt --relogin`: run a fresh ChatGPT login and refresh the saved snapshot
-- `api`: switch to API mode using the default legacy `auth.json` snapshot flow and `openai_base_url`
-- `api --relogin`: force a fresh API login and refresh the saved legacy API snapshot
+- `api`: switch to the default API group using the legacy `auth.json` snapshot flow and `openai_base_url`
+- `api --group NAME`: switch to one named API group
+- `api --relogin`: force a fresh API login and refresh the selected group's legacy API snapshot
+- `api --save-group`: save one group's `base_url` / `env_var` metadata without switching
+- `api --list-groups`: list saved API groups
+- `api --set-default-group NAME`: choose which API group `codex-mode api` uses by default
+- `api --show-auth-file`: print the managed auth snapshot path for one API group
+- `api --import-auth PATH`: import a user-managed `auth.json` file into one API group
 - `api --provider-mode`: switch to the optional env-driven provider config mode
 - `api --show-key`: show the current effective API key in masked form
 - `api --show-key-full`: show the full effective API key
@@ -41,6 +47,10 @@ Files managed under `~/.codex`:
 - `auth-profiles/api.auth.json`
 - `auth-profiles/api.base_url`
 - `auth-profiles/api.key`
+- `auth-profiles/api.groups.json`
+- `auth-profiles/api.<group>.auth.json`
+- `auth-profiles/api.<group>.base_url`
+- `auth-profiles/api.<group>.key`
 
 Quick start:
 
@@ -76,7 +86,14 @@ Examples:
 ./codex-mode chatgpt
 ./codex-mode chatgpt --relogin
 ./codex-mode api --base-url https://api.xairouter.com
+./codex-mode api --group work
 ./codex-mode api --relogin
+./codex-mode api --group work --base-url https://api.work.example/v1 --env-var WORK_XAI_API_KEY --save-group
+./codex-mode api --group work --set-key sk-...
+./codex-mode api --set-default-group work
+./codex-mode api --list-groups
+./codex-mode api --group work --show-auth-file
+./codex-mode api --group work --import-auth ./auth.json
 ./codex-mode api --provider-mode --base-url https://api.xairouter.com
 ./codex-mode api --relogin --prompt
 ./codex-mode api --show-key
@@ -94,6 +111,7 @@ Windows direct usage without install:
 ```powershell
 .\codex-mode.ps1 status
 .\codex-mode.ps1 api --base-url https://api.xairouter.com
+.\\codex-mode.ps1 api --group work --base-url https://api.work.example/v1 --save-group
 .\codex-mode.ps1 api --provider-mode --base-url https://api.xairouter.com
 .\codex-mode.ps1 chatgpt --relogin
 ```
@@ -108,13 +126,18 @@ Notes:
 - After switching modes in Codex App, fully quit and reopen the app.
 - `chatgpt` restores a saved login snapshot. If that snapshot has expired, use `chatgpt --relogin`.
 - `api` defaults to the legacy `auth.json` snapshot flow. This is the mode that keeps shared chat history with the app.
-- In the default legacy flow, `api` writes `openai_base_url = "..."`, refreshes `auth.json` when needed, and saves the result to `auth-profiles/api.auth.json`.
+- API groups let you keep multiple `base_url`, helper-managed API keys, and legacy `auth.json` snapshots side by side.
+- In the default legacy flow, `api` writes `openai_base_url = "..."`, refreshes `auth.json` when needed, and saves the result to the selected group's `auth-profiles/api[.<group>].auth.json`.
+- `api --save-group` is the non-destructive way to prepare a group ahead of time without switching away from the current mode.
+- `api --show-auth-file` prints the exact managed snapshot path so you can inspect or manually edit one group's `auth.json`.
+- `api --import-auth PATH` lets you bring in a hand-managed `auth.json` instead of forcing `codex-mode` to generate it via `codex login --with-api-key`.
 - `api --provider-mode` keeps the newer optional provider config block like `model_provider = "xai"` plus `[model_providers.xai]`, `wire_api = "responses"`, `requires_openai_auth = false`, and `env_key = "XAI_API_KEY"`.
 - `api` and `api --relogin` do not prompt for an API key by default. Use `api --prompt-key`, `api --set-key`, or pass `--prompt` explicitly.
 - `openai_base_url` insertion/removal is idempotent, so repeated `chatgpt` / `api` switches do not accumulate blank lines.
 - The managed provider block is also inserted idempotently and removed cleanly when you switch back to `chatgpt`.
-- `api --set-key` / `api --prompt-key` save to macOS Keychain by default on macOS, and to `~/.codex/auth-profiles/api.key` on Linux or Windows.
+- `api --set-key` / `api --prompt-key` save to macOS Keychain by default on macOS, and to group-specific managed key files on Linux or Windows.
 - `api --clear-key` only clears the selected helper-managed store. It does not modify `XAI_API_KEY`.
+- Each API group may also choose a preferred env var with `--env-var`; if that env var is not set, `codex-mode` still falls back to `XAI_API_KEY` and `OPENAI_API_KEY`.
 - `status --verbose` tells you three separate things:
   - which env key the provider expects
   - whether local helper storage exists

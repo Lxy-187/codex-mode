@@ -19,6 +19,9 @@
 - Removed the generic `config` subcommand and moved API-key helper management under `api --show-key`, `api --set-key`, `api --prompt-key`, and `api --clear-key`
 - Restored the original legacy API mode as the default `api` behavior, using `openai_base_url` plus `auth.json` / `api.auth.json` snapshots for shared chat history
 - Kept the newer env-driven provider config as an explicit optional path behind `api --provider-mode`
+- Added multiple named API groups with separate `base_url`, helper-managed API keys, and `auth.json` snapshots
+- Added API-group management commands for listing groups, selecting the default group, showing/importing auth snapshots, and saving group metadata
+- Changed legacy API snapshot handling so the current API group is tracked and restored per group instead of using one shared `api.auth.json`
 
 ## 0.1.0 - 2026-04-19
 

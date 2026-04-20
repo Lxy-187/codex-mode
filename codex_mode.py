@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 
 KEYCHAIN_SERVICE = "codex-openai-api-key"
+DEFAULT_API_GROUP = "default"
 REPO_HINT_NAMES = ("codex-mode", "codex-mode-portable")
 SOURCE_MARKER = ".codex-mode-source"
 GITHUB_REPO = "Lxy-187/codex-mode"
@@ -52,15 +53,19 @@ class Paths:
     api_auth_file: pathlib.Path
     api_base_url_file: pathlib.Path
     api_key_file: pathlib.Path
+    api_groups_file: pathlib.Path
 
 
 @dataclass
 class ApiKeyInspection:
+    group_name: str
     platform_name: str
     keychain_supported: bool
+    keychain_service: str
     keychain_has_value: bool
     file_has_value: bool
     env_var_name: str
+    fallback_env_var_names: list[str]
     env_var_has_value: bool
     gui_env_var_has_value: bool
     effective_source: str
@@ -78,7 +83,153 @@ def build_paths() -> Paths:
         api_auth_file=codex_home / "auth-profiles" / "api.auth.json",
         api_base_url_file=codex_home / "auth-profiles" / "api.base_url",
         api_key_file=codex_home / "auth-profiles" / "api.key",
+        api_groups_file=codex_home / "auth-profiles" / "api.groups.json",
     )
+
+
+def normalize_group_name(name: str) -> str:
+    normalized = (name or "").strip().lower()
+    if not normalized:
+        raise CodexModeError("API group name is empty.")
+    if not re.match(r"^[a-z0-9._-]+$", normalized):
+        raise CodexModeError(
+            "API group names may only use lowercase letters, digits, dot, underscore, and hyphen."
+        )
+    return normalized
+
+
+def default_api_groups_state() -> dict[str, object]:
+    return {
+        "version": 1,
+        "default_group": DEFAULT_API_GROUP,
+        "current_group": DEFAULT_API_GROUP,
+        "groups": {
+            DEFAULT_API_GROUP: {
+                "env_var_name": API_PROVIDER_ENV_KEY,
+            }
+        },
+    }
+
+
+def load_api_groups_state(paths: Paths) -> dict[str, object]:
+    state = default_api_groups_state()
+    if not paths.api_groups_file.exists():
+        return state
+
+    try:
+        loaded = json.loads(paths.api_groups_file.read_text(encoding="utf-8"))
+    except Exception:
+        return state
+
+    groups = loaded.get("groups", {})
+    normalized_groups: dict[str, dict[str, str]] = {}
+    if isinstance(groups, dict):
+        for raw_name, raw_config in groups.items():
+            try:
+                name = normalize_group_name(str(raw_name))
+            except CodexModeError:
+                continue
+            env_var_name = API_PROVIDER_ENV_KEY
+            if isinstance(raw_config, dict):
+                candidate = str(raw_config.get("env_var_name", "") or "").strip()
+                if candidate:
+                    env_var_name = candidate
+            normalized_groups[name] = {
+                "env_var_name": env_var_name,
+            }
+
+    if DEFAULT_API_GROUP not in normalized_groups:
+        normalized_groups[DEFAULT_API_GROUP] = {"env_var_name": API_PROVIDER_ENV_KEY}
+
+    default_group = str(loaded.get("default_group", DEFAULT_API_GROUP) or DEFAULT_API_GROUP)
+    current_group = str(loaded.get("current_group", default_group) or default_group)
+
+    try:
+        default_group = normalize_group_name(default_group)
+    except CodexModeError:
+        default_group = DEFAULT_API_GROUP
+    if default_group not in normalized_groups:
+        normalized_groups[default_group] = {"env_var_name": API_PROVIDER_ENV_KEY}
+
+    try:
+        current_group = normalize_group_name(current_group)
+    except CodexModeError:
+        current_group = default_group
+    if current_group not in normalized_groups:
+        normalized_groups[current_group] = {"env_var_name": API_PROVIDER_ENV_KEY}
+
+    state["default_group"] = default_group
+    state["current_group"] = current_group
+    state["groups"] = normalized_groups
+    return state
+
+
+def save_api_groups_state(paths: Paths, state: dict[str, object]) -> None:
+    paths.api_groups_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.api_groups_file.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def ensure_api_group_entry(state: dict[str, object], group_name: str) -> dict[str, str]:
+    groups = state.setdefault("groups", {})
+    assert isinstance(groups, dict)
+    entry = groups.get(group_name)
+    if not isinstance(entry, dict):
+        entry = {"env_var_name": API_PROVIDER_ENV_KEY}
+        groups[group_name] = entry
+    env_var_name = str(entry.get("env_var_name", "") or "").strip() or API_PROVIDER_ENV_KEY
+    entry["env_var_name"] = env_var_name
+    return entry
+
+
+def resolve_api_group_name(paths: Paths, explicit_group: str | None) -> str:
+    if explicit_group:
+        return normalize_group_name(explicit_group)
+    state = load_api_groups_state(paths)
+    return normalize_group_name(str(state.get("default_group", DEFAULT_API_GROUP) or DEFAULT_API_GROUP))
+
+
+def api_group_env_var_name(paths: Paths, group_name: str) -> str:
+    state = load_api_groups_state(paths)
+    entry = ensure_api_group_entry(state, group_name)
+    return entry["env_var_name"]
+
+
+def api_group_env_var_candidates(paths: Paths, group_name: str) -> list[str]:
+    candidates = [
+        api_group_env_var_name(paths, group_name),
+        API_PROVIDER_ENV_KEY,
+        "OPENAI_API_KEY",
+    ]
+    unique: list[str] = []
+    for candidate in candidates:
+        normalized = candidate.strip()
+        if normalized and normalized not in unique:
+            unique.append(normalized)
+    return unique
+
+
+def keychain_service_for_group(group_name: str) -> str:
+    if group_name == DEFAULT_API_GROUP:
+        return KEYCHAIN_SERVICE
+    return f"{KEYCHAIN_SERVICE}.{group_name}"
+
+
+def api_group_auth_file(paths: Paths, group_name: str) -> pathlib.Path:
+    if group_name == DEFAULT_API_GROUP:
+        return paths.api_auth_file
+    return paths.profile_dir / f"api.{group_name}.auth.json"
+
+
+def api_group_base_url_file(paths: Paths, group_name: str) -> pathlib.Path:
+    if group_name == DEFAULT_API_GROUP:
+        return paths.api_base_url_file
+    return paths.profile_dir / f"api.{group_name}.base_url"
+
+
+def api_group_key_file(paths: Paths, group_name: str) -> pathlib.Path:
+    if group_name == DEFAULT_API_GROUP:
+        return paths.api_key_file
+    return paths.profile_dir / f"api.{group_name}.key"
 
 
 def detect_codex_bin() -> str:
@@ -229,6 +380,20 @@ def read_provider_base_url(config_file: pathlib.Path, provider_id: str) -> str:
     return value_match.group(1) if value_match else ""
 
 
+def read_provider_env_key(config_file: pathlib.Path, provider_id: str) -> str:
+    text = read_config_text(config_file)
+    pattern = (
+        rf"(?ms)^\[model_providers\.{re.escape(provider_id)}\]\s*$"
+        rf"(.*?)(?=^\[|\Z)"
+    )
+    match = re.search(pattern, text)
+    if not match:
+        return ""
+    section_body = match.group(1)
+    value_match = re.search(r'(?m)^\s*env_key\s*=\s*"([^"]+)"\s*$', section_body)
+    return value_match.group(1) if value_match else ""
+
+
 def api_provider_config_is_active(config_file: pathlib.Path) -> bool:
     text = read_config_text(config_file)
     return (
@@ -238,7 +403,7 @@ def api_provider_config_is_active(config_file: pathlib.Path) -> bool:
     )
 
 
-def render_api_provider_block(base_url: str, newline: str) -> list[str]:
+def render_api_provider_block(base_url: str, env_var_name: str, newline: str) -> list[str]:
     return [
         f"{API_CONFIG_START_COMMENT}{newline}",
         f'model_provider = "{API_PROVIDER_ID}"{newline}',
@@ -248,7 +413,7 @@ def render_api_provider_block(base_url: str, newline: str) -> list[str]:
         f'base_url = "{base_url}"{newline}',
         f'wire_api = "{API_PROVIDER_WIRE_API}"{newline}',
         f"requires_openai_auth = {API_PROVIDER_REQUIRES_OPENAI_AUTH}{newline}",
-        f'env_key = "{API_PROVIDER_ENV_KEY}"{newline}',
+        f'env_key = "{env_var_name}"{newline}',
         f"{API_CONFIG_END_COMMENT}{newline}",
     ]
 
@@ -350,7 +515,7 @@ def remove_api_provider_config(config_file: pathlib.Path) -> None:
     write_config_text(config_file, "".join(collapse_consecutive_blank_lines(new_lines)))
 
 
-def set_api_provider_config(config_file: pathlib.Path, base_url: str) -> None:
+def set_api_provider_config(config_file: pathlib.Path, base_url: str, env_var_name: str) -> None:
     text = read_config_text(config_file)
     newline = detect_newline(text)
     remove_api_provider_config(config_file)
@@ -373,7 +538,7 @@ def set_api_provider_config(config_file: pathlib.Path, base_url: str) -> None:
     if new_lines and not is_blank_line(new_lines[-1]):
         new_lines.append(newline)
 
-    new_lines.extend(render_api_provider_block(base_url, newline))
+    new_lines.extend(render_api_provider_block(base_url, env_var_name, newline))
     if after:
         new_lines.append(newline)
     new_lines.extend(after)
@@ -386,7 +551,11 @@ def save_current_snapshot(paths: Paths) -> None:
     if current_mode == "chatgpt":
         shutil.copy2(paths.auth_file, paths.chatgpt_auth_file)
     elif current_mode == "apikey":
-        shutil.copy2(paths.auth_file, paths.api_auth_file)
+        state = load_api_groups_state(paths)
+        current_group = normalize_group_name(
+            str(state.get("current_group", state.get("default_group", DEFAULT_API_GROUP)) or DEFAULT_API_GROUP)
+        )
+        shutil.copy2(paths.auth_file, api_group_auth_file(paths, current_group))
 
 
 def require_file(path: pathlib.Path, message: str) -> None:
@@ -422,13 +591,14 @@ def codex_login_status(codex_bin: str) -> None:
     run_codex(codex_bin, ["login", "status"])
 
 
-def read_mac_keychain_key() -> str:
+def read_mac_keychain_key(service_name: str | None = None) -> str:
     if platform.system() != "Darwin":
         return ""
     if not shutil.which("security"):
         return ""
+    service = service_name or KEYCHAIN_SERVICE
     proc = subprocess.run(
-        ["security", "find-generic-password", "-a", getpass.getuser(), "-s", KEYCHAIN_SERVICE, "-w"],
+        ["security", "find-generic-password", "-a", getpass.getuser(), "-s", service, "-w"],
         text=True,
         capture_output=True,
     )
@@ -452,13 +622,14 @@ def read_launchctl_env(var_name: str) -> str:
     return proc.stdout.strip()
 
 
-def write_mac_keychain_key(value: str) -> None:
+def write_mac_keychain_key(value: str, service_name: str | None = None) -> None:
     if platform.system() != "Darwin":
         raise CodexModeError("macOS Keychain is only available on macOS.")
     if not shutil.which("security"):
         raise CodexModeError("Could not find the macOS `security` tool.")
+    service = service_name or KEYCHAIN_SERVICE
     proc = subprocess.run(
-        ["security", "add-generic-password", "-U", "-a", getpass.getuser(), "-s", KEYCHAIN_SERVICE, "-w", value],
+        ["security", "add-generic-password", "-U", "-a", getpass.getuser(), "-s", service, "-w", value],
         text=True,
         capture_output=True,
     )
@@ -466,13 +637,14 @@ def write_mac_keychain_key(value: str) -> None:
         raise CodexModeError(proc.stderr.strip() or "Failed to write the API key to macOS Keychain.")
 
 
-def remove_mac_keychain_key() -> None:
+def remove_mac_keychain_key(service_name: str | None = None) -> None:
     if platform.system() != "Darwin":
         raise CodexModeError("macOS Keychain is only available on macOS.")
     if not shutil.which("security"):
         raise CodexModeError("Could not find the macOS `security` tool.")
+    service = service_name or KEYCHAIN_SERVICE
     proc = subprocess.run(
-        ["security", "delete-generic-password", "-a", getpass.getuser(), "-s", KEYCHAIN_SERVICE],
+        ["security", "delete-generic-password", "-a", getpass.getuser(), "-s", service],
         text=True,
         capture_output=True,
     )
@@ -480,8 +652,8 @@ def remove_mac_keychain_key() -> None:
         raise CodexModeError(proc.stderr.strip() or "Failed to remove the API key from macOS Keychain.")
 
 
-def read_managed_api_key(paths: Paths) -> str:
-    return read_secret_text(paths.api_key_file)
+def read_managed_api_key(paths: Paths, group_name: str) -> str:
+    return read_secret_text(api_group_key_file(paths, group_name))
 
 
 def mask_secret(value: str) -> str:
@@ -494,12 +666,21 @@ def mask_secret(value: str) -> str:
     return value[:4] + "*" * (len(value) - 8) + value[-4:]
 
 
-def inspect_api_key_sources(paths: Paths) -> ApiKeyInspection:
-    env_var_name = API_PROVIDER_ENV_KEY
-    env_value = os.environ.get(env_var_name, "").strip()
+def inspect_api_key_sources(paths: Paths, group_name: str) -> ApiKeyInspection:
+    env_var_candidates = api_group_env_var_candidates(paths, group_name)
+    env_var_name = env_var_candidates[0]
+    env_value = ""
+    env_source = env_var_name
+    for candidate in env_var_candidates:
+        candidate_value = os.environ.get(candidate, "").strip()
+        if candidate_value:
+            env_source = candidate
+            env_value = candidate_value
+            break
     gui_env_value = read_launchctl_env(env_var_name)
-    keychain_value = read_mac_keychain_key()
-    file_value = read_managed_api_key(paths)
+    keychain_service = keychain_service_for_group(group_name)
+    keychain_value = read_mac_keychain_key(keychain_service)
+    file_value = read_managed_api_key(paths, group_name)
     platform_name = current_platform_name()
     keychain_supported = platform_name == "Darwin" and shutil.which("security") is not None
 
@@ -510,18 +691,21 @@ def inspect_api_key_sources(paths: Paths) -> ApiKeyInspection:
         effective_source = "managed file"
         effective_value = file_value
     elif env_value:
-        effective_source = env_var_name
+        effective_source = env_source
         effective_value = env_value
     else:
         effective_source = "interactive prompt"
         effective_value = ""
 
     return ApiKeyInspection(
+        group_name=group_name,
         platform_name=platform_name,
         keychain_supported=keychain_supported,
+        keychain_service=keychain_service,
         keychain_has_value=bool(keychain_value),
         file_has_value=bool(file_value),
         env_var_name=env_var_name,
+        fallback_env_var_names=env_var_candidates[1:],
         env_var_has_value=bool(env_value),
         gui_env_var_has_value=bool(gui_env_value),
         effective_source=effective_source,
@@ -529,18 +713,19 @@ def inspect_api_key_sources(paths: Paths) -> ApiKeyInspection:
     )
 
 
-def resolve_api_key(paths: Paths, *, allow_prompt: bool) -> str:
-    key = read_mac_keychain_key()
+def resolve_api_key(paths: Paths, group_name: str, *, allow_prompt: bool) -> str:
+    key = read_mac_keychain_key(keychain_service_for_group(group_name))
     if key:
         return key
 
-    key = read_managed_api_key(paths)
+    key = read_managed_api_key(paths, group_name)
     if key:
         return key
 
-    key = os.environ.get(API_PROVIDER_ENV_KEY, "").strip()
-    if key:
-        return key
+    for env_var_name in api_group_env_var_candidates(paths, group_name):
+        key = os.environ.get(env_var_name, "").strip()
+        if key:
+            return key
 
     if allow_prompt:
         return getpass.getpass("OpenAI API key: ").strip()
@@ -548,11 +733,12 @@ def resolve_api_key(paths: Paths, *, allow_prompt: bool) -> str:
     return ""
 
 
-def resolve_base_url(paths: Paths, arg_base_url: str | None) -> str:
+def resolve_base_url(paths: Paths, arg_base_url: str | None, group_name: str) -> str:
     if arg_base_url:
         return arg_base_url
-    if paths.api_base_url_file.exists():
-        return paths.api_base_url_file.read_text().strip()
+    base_url_file = api_group_base_url_file(paths, group_name)
+    if base_url_file.exists():
+        return base_url_file.read_text().strip()
     provider_base_url = read_provider_base_url(paths.config_file, API_PROVIDER_ID).strip()
     if provider_base_url:
         return provider_base_url
@@ -560,18 +746,23 @@ def resolve_base_url(paths: Paths, arg_base_url: str | None) -> str:
 
 
 def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
+    groups_state = load_api_groups_state(paths)
+    default_group = normalize_group_name(str(groups_state.get("default_group", DEFAULT_API_GROUP) or DEFAULT_API_GROUP))
+    current_group = normalize_group_name(str(groups_state.get("current_group", default_group) or default_group))
     auth_mode = read_auth_mode(paths.auth_file)
     api_mode_active = api_provider_config_is_active(paths.config_file)
     config_base_url = read_openai_base_url(paths.config_file)
     provider_base_url = read_provider_base_url(paths.config_file, API_PROVIDER_ID)
-    saved_api_base_url = paths.api_base_url_file.read_text().strip() if paths.api_base_url_file.exists() else ""
-    effective_api_base_url = resolve_base_url(paths, None)
-    api_key = inspect_api_key_sources(paths)
+    provider_env_key = read_provider_env_key(paths.config_file, API_PROVIDER_ID)
+    saved_api_base_url_file = api_group_base_url_file(paths, current_group)
+    saved_api_base_url = saved_api_base_url_file.read_text().strip() if saved_api_base_url_file.exists() else ""
+    effective_api_base_url = resolve_base_url(paths, None, current_group)
+    api_key = inspect_api_key_sources(paths, current_group)
 
     if api_mode_active:
-        print("Current mode: API key (provider)", flush=True)
+        print(f"Current mode: API key (provider, group: {current_group})", flush=True)
     elif auth_mode == "apikey":
-        print("Current mode: legacy API auth", flush=True)
+        print(f"Current mode: legacy API auth (group: {current_group})", flush=True)
     elif auth_mode == "chatgpt":
         print("Current mode: ChatGPT", flush=True)
     elif auth_mode:
@@ -586,7 +777,12 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
         print(f"Codex home: {paths.codex_home}", flush=True)
         print(f"Auth file: {'present' if paths.auth_file.exists() else 'missing'}", flush=True)
         print(f"Saved ChatGPT snapshot: {'present' if paths.chatgpt_auth_file.exists() else 'missing'}", flush=True)
-        print(f"Saved legacy API snapshot: {'present' if paths.api_auth_file.exists() else 'missing'}", flush=True)
+        print(f"Default API group: {default_group}", flush=True)
+        print(f"Current API group: {current_group}", flush=True)
+        print(
+            f"Saved legacy API snapshot: {'present' if api_group_auth_file(paths, current_group).exists() else 'missing'}",
+            flush=True,
+        )
         print("Default API switch strategy: legacy auth snapshot", flush=True)
         print(f"API provider config active: {'yes' if api_mode_active else 'no'}", flush=True)
         if auth_mode == "apikey" and not api_mode_active:
@@ -599,16 +795,16 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
         print(f"Model provider: {read_model_provider(paths.config_file) or 'not set'}", flush=True)
         print("", flush=True)
         print("Provider auth model:", flush=True)
-        print(f"  Expected provider env key: {API_PROVIDER_ENV_KEY}", flush=True)
+        print(f"  Expected provider env key: {provider_env_key or api_key.env_var_name}", flush=True)
         print(f"  requires_openai_auth: {API_PROVIDER_REQUIRES_OPENAI_AUTH}", flush=True)
         print("Local helper availability:", flush=True)
         if api_key.platform_name == "Darwin":
             print(
-                f"  macOS Keychain ({KEYCHAIN_SERVICE}): {'set' if api_key.keychain_has_value else 'not set'}",
+                f"  macOS Keychain ({api_key.keychain_service}): {'set' if api_key.keychain_has_value else 'not set'}",
                 flush=True,
             )
         print(
-            f"  Managed file ({paths.api_key_file}): {'set' if api_key.file_has_value else 'not set'}",
+            f"  Managed file ({api_group_key_file(paths, current_group)}): {'set' if api_key.file_has_value else 'not set'}",
             flush=True,
         )
         print("Environment visibility:", flush=True)
@@ -616,6 +812,11 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
             f"  Current shell {api_key.env_var_name}: {'set' if api_key.env_var_has_value else 'not set'}",
             flush=True,
         )
+        for fallback_env_var in api_key.fallback_env_var_names:
+            print(
+                f"  Fallback shell {fallback_env_var}: {'set' if bool(os.environ.get(fallback_env_var, '').strip()) else 'not set'}",
+                flush=True,
+            )
         if api_key.platform_name == "Darwin":
             print(
                 f"  GUI session {api_key.env_var_name} via launchctl: {'set' if api_key.gui_env_var_has_value else 'not set'}",
@@ -640,9 +841,24 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
             )
         if api_key.platform_name == "Darwin" and (api_key.keychain_has_value or api_key.file_has_value) and not api_key.gui_env_var_has_value:
             print(
-                "Note: a local helper key exists, but GUI apps still cannot read XAI_API_KEY from launchctl.",
+                f"Note: a local helper key exists, but GUI apps still cannot read {api_key.env_var_name} from launchctl.",
                 flush=True,
             )
+
+        print("", flush=True)
+        print("Configured API groups:", flush=True)
+        groups = groups_state.get("groups", {})
+        assert isinstance(groups, dict)
+        for group_name in sorted(groups):
+            markers: list[str] = []
+            if group_name == default_group:
+                markers.append("default")
+            if group_name == current_group:
+                markers.append("current")
+            marker_text = f" ({', '.join(markers)})" if markers else ""
+            group_base_url = read_secret_text(api_group_base_url_file(paths, group_name)) or "not set"
+            group_env_var = api_group_env_var_name(paths, group_name)
+            print(f"  {group_name}{marker_text}: base_url={group_base_url}, env_var={group_env_var}", flush=True)
 
     if api_mode_active:
         if verbose:
@@ -665,8 +881,9 @@ def resolve_api_key_store(store: str) -> str:
     return resolved
 
 
-def show_api_key_config(paths: Paths, *, show_full: bool) -> None:
-    inspection = inspect_api_key_sources(paths)
+def show_api_key_config(paths: Paths, group_name: str, *, show_full: bool) -> None:
+    inspection = inspect_api_key_sources(paths, group_name)
+    print(f"Group: {group_name}", flush=True)
     print(f"Effective source: {inspection.effective_source}", flush=True)
     if inspection.effective_value:
         value = inspection.effective_value if show_full else mask_secret(inspection.effective_value)
@@ -675,54 +892,216 @@ def show_api_key_config(paths: Paths, *, show_full: bool) -> None:
         print("Effective API key: not set", flush=True)
 
 
-def set_api_key_config(paths: Paths, *, api_key: str, store: str) -> None:
+def set_api_key_config(paths: Paths, group_name: str, *, api_key: str, store: str) -> None:
     normalized = api_key.strip()
     if not normalized:
         raise CodexModeError("API key is empty.")
 
     resolved_store = resolve_api_key_store(store)
     if resolved_store == "keychain":
-        write_mac_keychain_key(normalized)
-        print("Saved the API key to macOS Keychain.", flush=True)
+        write_mac_keychain_key(normalized, keychain_service_for_group(group_name))
+        print(f"Saved the API key for group '{group_name}' to macOS Keychain.", flush=True)
     elif resolved_store == "file":
-        write_secret_text(paths.api_key_file, normalized)
-        print(f"Saved the API key to the managed file: {paths.api_key_file}", flush=True)
+        key_file = api_group_key_file(paths, group_name)
+        write_secret_text(key_file, normalized)
+        print(f"Saved the API key for group '{group_name}' to the managed file: {key_file}", flush=True)
     else:
         raise CodexModeError(f"Unsupported API-key store: {resolved_store}")
 
     print(f"Stored API key: {mask_secret(normalized)}", flush=True)
 
 
-def clear_api_key_config(paths: Paths, *, store: str) -> None:
+def clear_api_key_config(paths: Paths, group_name: str, *, store: str) -> None:
     resolved_store = resolve_api_key_store(store)
     if resolved_store == "keychain":
-        remove_mac_keychain_key()
-        print("Cleared the API key from macOS Keychain.", flush=True)
+        remove_mac_keychain_key(keychain_service_for_group(group_name))
+        print(f"Cleared the API key for group '{group_name}' from macOS Keychain.", flush=True)
     elif resolved_store == "file":
-        remove_secret_file(paths.api_key_file)
-        print(f"Cleared the managed API key file: {paths.api_key_file}", flush=True)
+        key_file = api_group_key_file(paths, group_name)
+        remove_secret_file(key_file)
+        print(f"Cleared the managed API key file for group '{group_name}': {key_file}", flush=True)
     else:
         raise CodexModeError(f"Unsupported API-key store: {resolved_store}")
     print("Environment variables are not modified by codex-mode.", flush=True)
 
 
-def handle_api_key_management(paths: Paths, args: argparse.Namespace) -> bool:
+def list_api_groups(paths: Paths) -> None:
+    state = load_api_groups_state(paths)
+    default_group = normalize_group_name(str(state.get("default_group", DEFAULT_API_GROUP) or DEFAULT_API_GROUP))
+    current_group = normalize_group_name(str(state.get("current_group", default_group) or default_group))
+    groups = state.get("groups", {})
+    assert isinstance(groups, dict)
+
+    print("API groups:", flush=True)
+    for group_name in sorted(groups):
+        markers: list[str] = []
+        if group_name == default_group:
+            markers.append("default")
+        if group_name == current_group:
+            markers.append("current")
+        marker_text = f" ({', '.join(markers)})" if markers else ""
+        base_url = read_secret_text(api_group_base_url_file(paths, group_name)) or "not set"
+        env_var_name = api_group_env_var_name(paths, group_name)
+        auth_present = api_group_auth_file(paths, group_name).exists()
+        print(
+            f"- {group_name}{marker_text}: base_url={base_url}, env_var={env_var_name}, auth_snapshot={'yes' if auth_present else 'no'}",
+            flush=True,
+        )
+
+
+def save_api_group_config(
+    paths: Paths,
+    group_name: str,
+    *,
+    base_url: str | None,
+    env_var_name: str | None,
+) -> None:
+    state = load_api_groups_state(paths)
+    groups = state.get("groups", {})
+    assert isinstance(groups, dict)
+    existed = group_name in groups
+    entry = ensure_api_group_entry(state, group_name)
+    changed = not existed
+    if env_var_name is not None:
+        normalized_env_var_name = env_var_name.strip()
+        if not normalized_env_var_name:
+            raise CodexModeError("Environment variable name is empty.")
+        entry["env_var_name"] = normalized_env_var_name
+        changed = True
+    if changed:
+        save_api_groups_state(paths, state)
+    if base_url is not None:
+        write_secret_text(api_group_base_url_file(paths, group_name), base_url)
+    print(f"Saved API group '{group_name}'.", flush=True)
+    print(
+        f"base_url: {read_secret_text(api_group_base_url_file(paths, group_name)) or 'not set'}",
+        flush=True,
+    )
+    print(f"env_var: {api_group_env_var_name(paths, group_name)}", flush=True)
+
+
+def set_default_api_group(paths: Paths, group_name: str) -> None:
+    state = load_api_groups_state(paths)
+    ensure_api_group_entry(state, group_name)
+    state["default_group"] = group_name
+    if not str(state.get("current_group", "") or "").strip():
+        state["current_group"] = group_name
+    save_api_groups_state(paths, state)
+    print(f"Default API group set to: {group_name}", flush=True)
+
+
+def set_current_api_group(paths: Paths, group_name: str) -> None:
+    state = load_api_groups_state(paths)
+    ensure_api_group_entry(state, group_name)
+    state["current_group"] = group_name
+    save_api_groups_state(paths, state)
+
+
+def remove_api_group(paths: Paths, group_name: str) -> None:
+    if group_name == DEFAULT_API_GROUP:
+        raise CodexModeError("The default API group cannot be removed.")
+
+    state = load_api_groups_state(paths)
+    groups = state.get("groups", {})
+    assert isinstance(groups, dict)
+    groups.pop(group_name, None)
+    if str(state.get("default_group", DEFAULT_API_GROUP) or DEFAULT_API_GROUP) == group_name:
+        state["default_group"] = DEFAULT_API_GROUP
+    if str(state.get("current_group", DEFAULT_API_GROUP) or DEFAULT_API_GROUP) == group_name:
+        state["current_group"] = DEFAULT_API_GROUP
+    save_api_groups_state(paths, state)
+
+    for path in (
+        api_group_auth_file(paths, group_name),
+        api_group_base_url_file(paths, group_name),
+        api_group_key_file(paths, group_name),
+    ):
+        if path.exists():
+            path.unlink()
+
+    print(f"Removed API group: {group_name}", flush=True)
+
+
+def show_api_auth_file(paths: Paths, group_name: str) -> None:
+    print(api_group_auth_file(paths, group_name), flush=True)
+
+
+def import_api_auth_file(paths: Paths, group_name: str, source: str) -> None:
+    source_path = pathlib.Path(source).expanduser().resolve()
+    require_file(source_path, f"Auth file not found: {source_path}")
+    try:
+        data = json.loads(source_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise CodexModeError(f"Could not parse auth file: {source_path}") from exc
+
+    auth_mode = str(data.get("auth_mode", "") or "")
+    if auth_mode != "apikey":
+        raise CodexModeError(
+            f"Imported auth file must have auth_mode='apikey', got '{auth_mode or 'unknown'}'."
+        )
+
+    target = api_group_auth_file(paths, group_name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, target)
+    print(f"Imported API auth snapshot for group '{group_name}' from: {source_path}", flush=True)
+    print(f"Managed auth snapshot: {target}", flush=True)
+
+
+def handle_api_key_management(paths: Paths, args: argparse.Namespace, group_name: str) -> bool:
     if args.show_key:
-        show_api_key_config(paths, show_full=False)
+        show_api_key_config(paths, group_name, show_full=False)
         return True
     if args.show_key_full:
-        show_api_key_config(paths, show_full=True)
+        show_api_key_config(paths, group_name, show_full=True)
         return True
     if args.set_key is not None:
-        set_api_key_config(paths, api_key=args.set_key, store=args.store)
+        set_api_key_config(paths, group_name, api_key=args.set_key, store=args.store)
         return True
     if args.prompt_key:
-        set_api_key_config(paths, api_key=getpass.getpass("OpenAI API key: "), store=args.store)
+        set_api_key_config(paths, group_name, api_key=getpass.getpass("OpenAI API key: "), store=args.store)
         return True
     if args.clear_key:
-        clear_api_key_config(paths, store=args.store)
+        clear_api_key_config(paths, group_name, store=args.store)
         return True
     return False
+
+
+def handle_api_group_management(paths: Paths, args: argparse.Namespace, group_name: str) -> bool:
+    did_work = False
+
+    if args.list_groups:
+        list_api_groups(paths)
+        return True
+
+    if args.remove_group is not None:
+        remove_api_group(paths, normalize_group_name(args.remove_group))
+        did_work = True
+
+    if args.set_default_group is not None:
+        set_default_api_group(paths, normalize_group_name(args.set_default_group))
+        did_work = True
+
+    if args.save_group:
+        save_api_group_config(
+            paths,
+            group_name,
+            base_url=args.base_url,
+            env_var_name=args.env_var,
+        )
+        did_work = True
+
+    if args.import_auth is not None:
+        import_api_auth_file(paths, group_name, args.import_auth)
+        did_work = True
+
+    if args.show_auth_file:
+        show_api_auth_file(paths, group_name)
+        did_work = True
+
+    if handle_api_key_management(paths, args, group_name):
+        did_work = True
+
+    return did_work
 
 
 def switch_chatgpt(paths: Paths, codex_bin: str) -> None:
@@ -753,6 +1132,7 @@ def switch_api(
     paths: Paths,
     codex_bin: str,
     *,
+    group_name: str,
     base_url: str | None,
     refresh_auth: bool,
     prompt_for_key: bool,
@@ -762,6 +1142,7 @@ def switch_api(
         switch_api_provider(
             paths,
             codex_bin,
+            group_name=group_name,
             base_url=base_url,
             refresh_auth=refresh_auth,
             prompt_for_key=prompt_for_key,
@@ -770,6 +1151,7 @@ def switch_api(
         switch_api_legacy(
             paths,
             codex_bin,
+            group_name=group_name,
             base_url=base_url,
             refresh_auth=refresh_auth,
             prompt_for_key=prompt_for_key,
@@ -780,6 +1162,7 @@ def switch_api_provider(
     paths: Paths,
     codex_bin: str,
     *,
+    group_name: str,
     base_url: str | None,
     refresh_auth: bool,
     prompt_for_key: bool,
@@ -787,40 +1170,43 @@ def switch_api_provider(
     del codex_bin
     del refresh_auth
 
-    final_base_url = resolve_base_url(paths, base_url)
+    final_base_url = resolve_base_url(paths, base_url, group_name)
     if not final_base_url:
         raise CodexModeError("No API base URL configured. Pass `--base-url URL`.")
 
-    api_key = resolve_api_key(paths, allow_prompt=prompt_for_key)
+    api_key = resolve_api_key(paths, group_name, allow_prompt=prompt_for_key)
     if not api_key:
+        preferred_env_var = api_group_env_var_name(paths, group_name)
         raise CodexModeError(
-            f"No API key is currently available from managed storage or the {API_PROVIDER_ENV_KEY} environment variable. "
+            f"No API key is currently available for group '{group_name}' from managed storage or the {preferred_env_var} environment variable. "
             "Use `codex-mode api --prompt-key`, `codex-mode api --set-key ...`, "
-            f"set {API_PROVIDER_ENV_KEY}, or rerun with `--prompt`."
+            f"set {preferred_env_var}, or rerun with `--prompt`."
         )
 
     ensure_profile_dir(paths)
     paths.config_file.parent.mkdir(parents=True, exist_ok=True)
     save_current_snapshot(paths)
+    set_current_api_group(paths, group_name)
 
-    write_secret_text(paths.api_base_url_file, final_base_url)
-    set_api_provider_config(paths.config_file, final_base_url)
+    write_secret_text(api_group_base_url_file(paths, group_name), final_base_url)
+    set_api_provider_config(paths.config_file, final_base_url, api_group_env_var_name(paths, group_name))
 
-    print("Switched Codex to API billing mode.", flush=True)
+    print(f"Switched Codex to API billing mode: {group_name}", flush=True)
     print("API scheme: provider config", flush=True)
     print(f"Configured model_provider = {API_PROVIDER_ID}", flush=True)
     print(f"Configured provider base_url = {final_base_url}", flush=True)
-    print(f"Configured provider env_key = {API_PROVIDER_ENV_KEY}", flush=True)
+    print(f"Configured provider env_key = {api_group_env_var_name(paths, group_name)}", flush=True)
     print("If Codex App is open, fully quit and reopen it.", flush=True)
-    if os.environ.get(API_PROVIDER_ENV_KEY, "").strip() == "":
+    preferred_env_var = api_group_env_var_name(paths, group_name)
+    if os.environ.get(preferred_env_var, "").strip() == "":
         print(
-            f"Note: the active shell does not currently expose {API_PROVIDER_ENV_KEY}. "
+            f"Note: the active shell does not currently expose {preferred_env_var}. "
             "Make sure your app session can read that variable.",
             flush=True,
         )
     if platform.system() == "Darwin":
         print(
-            f"Make sure {API_PROVIDER_ENV_KEY} is available to GUI apps in your login session.",
+            f"Make sure {preferred_env_var} is available to GUI apps in your login session.",
             flush=True,
         )
 
@@ -829,45 +1215,51 @@ def switch_api_legacy(
     paths: Paths,
     codex_bin: str,
     *,
+    group_name: str,
     base_url: str | None,
     refresh_auth: bool,
     prompt_for_key: bool,
 ) -> None:
-    final_base_url = resolve_base_url(paths, base_url)
+    final_base_url = resolve_base_url(paths, base_url, group_name)
     if not final_base_url:
         raise CodexModeError("No API base URL configured. Pass `--base-url URL`.")
 
     ensure_profile_dir(paths)
     paths.config_file.parent.mkdir(parents=True, exist_ok=True)
+    group_auth_file = api_group_auth_file(paths, group_name)
+    group_base_url_file = api_group_base_url_file(paths, group_name)
 
-    if not refresh_auth and paths.api_auth_file.exists():
+    if not refresh_auth and group_auth_file.exists():
         save_current_snapshot(paths)
-        write_secret_text(paths.api_base_url_file, final_base_url)
+        write_secret_text(group_base_url_file, final_base_url)
         remove_api_provider_config(paths.config_file)
         set_openai_base_url(paths.config_file, final_base_url)
-        shutil.copy2(paths.api_auth_file, paths.auth_file)
-        print("Switched Codex to API billing mode.", flush=True)
+        shutil.copy2(group_auth_file, paths.auth_file)
+        set_current_api_group(paths, group_name)
+        print(f"Switched Codex to API billing mode: {group_name}", flush=True)
         print("API scheme: legacy auth snapshot", flush=True)
         print(f"Configured openai_base_url = {final_base_url}", flush=True)
         print("If Codex App is open, fully quit and reopen it.", flush=True)
         codex_login_status(codex_bin)
         return
 
-    api_key = resolve_api_key(paths, allow_prompt=prompt_for_key)
+    api_key = resolve_api_key(paths, group_name, allow_prompt=prompt_for_key)
     if not api_key:
+        preferred_env_var = api_group_env_var_name(paths, group_name)
         raise CodexModeError(
-            f"No API key is currently available from managed storage or the {API_PROVIDER_ENV_KEY} environment variable. "
+            f"No API key is currently available for group '{group_name}' from managed storage or the {preferred_env_var} environment variable. "
             "Use `codex-mode api --prompt-key`, `codex-mode api --set-key ...`, "
-            f"set {API_PROVIDER_ENV_KEY}, or rerun with `--prompt`."
+            f"set {preferred_env_var}, or rerun with `--prompt`."
         )
 
     auth_backup = read_file_bytes(paths.auth_file)
     config_backup = read_file_bytes(paths.config_file)
-    saved_base_url_backup = read_file_bytes(paths.api_base_url_file)
+    saved_base_url_backup = read_file_bytes(group_base_url_file)
+    groups_backup = read_file_bytes(paths.api_groups_file)
 
     try:
         save_current_snapshot(paths)
-        write_secret_text(paths.api_base_url_file, final_base_url)
+        write_secret_text(group_base_url_file, final_base_url)
         remove_api_provider_config(paths.config_file)
         set_openai_base_url(paths.config_file, final_base_url)
         run_codex(codex_bin, ["login", "--with-api-key"], input_text=f"{api_key}\n")
@@ -876,14 +1268,16 @@ def switch_api_legacy(
             raise CodexModeError(
                 f"API login completed, but the saved auth mode is '{auth_mode or 'unknown'}', not 'apikey'."
             )
-        shutil.copy2(paths.auth_file, paths.api_auth_file)
+        shutil.copy2(paths.auth_file, group_auth_file)
+        set_current_api_group(paths, group_name)
     except Exception:
         restore_file_bytes(paths.auth_file, auth_backup)
         restore_file_bytes(paths.config_file, config_backup)
-        restore_file_bytes(paths.api_base_url_file, saved_base_url_backup)
+        restore_file_bytes(group_base_url_file, saved_base_url_backup)
+        restore_file_bytes(paths.api_groups_file, groups_backup)
         raise
 
-    print("Switched Codex to API billing mode.", flush=True)
+    print(f"Switched Codex to API billing mode: {group_name}", flush=True)
     print("API scheme: legacy auth snapshot", flush=True)
     print(f"Configured openai_base_url = {final_base_url}", flush=True)
     print("If Codex App is open, fully quit and reopen it.", flush=True)
@@ -894,6 +1288,7 @@ def switch_or_relogin_api(
     paths: Paths,
     codex_bin: str,
     *,
+    group_name: str,
     base_url: str | None,
     relogin: bool,
     prompt_for_key: bool,
@@ -902,6 +1297,7 @@ def switch_or_relogin_api(
     switch_api(
         paths,
         codex_bin,
+        group_name=group_name,
         base_url=base_url,
         refresh_auth=relogin,
         prompt_for_key=prompt_for_key,
@@ -1120,7 +1516,13 @@ def build_parser() -> argparse.ArgumentParser:
           codex-mode chatgpt
           codex-mode chatgpt --relogin
           codex-mode api --base-url https://api.xairouter.com
+          codex-mode api --group work
           codex-mode api --relogin
+          codex-mode api --group work --base-url https://api.work.example --save-group
+          codex-mode api --list-groups
+          codex-mode api --set-default-group work
+          codex-mode api --group work --show-auth-file
+          codex-mode api --group work --import-auth ./auth.json
           codex-mode api --provider-mode --base-url https://api.xairouter.com
           codex-mode api --relogin --prompt
           codex-mode api --show-key
@@ -1136,9 +1538,10 @@ def build_parser() -> argparse.ArgumentParser:
           Windows/Linux: managed file -> XAI_API_KEY -> interactive prompt
 
         API switching strategy:
-          1. `codex-mode api` defaults to the legacy auth.json snapshot flow and shared chat history
-          2. `codex-mode api --provider-mode` uses the optional env-driven `model_provider = "xai"` config
-          3. `codex-mode chatgpt` restores the saved ChatGPT snapshot and removes API-only config
+          1. `codex-mode api` defaults to the default API group and the legacy auth.json snapshot flow
+          2. `codex-mode api --group NAME` switches to one specific saved API group
+          3. `codex-mode api --provider-mode` uses the optional env-driven `model_provider = "xai"` config
+          4. `codex-mode chatgpt` restores the saved ChatGPT snapshot and removes API-only config
 
         Update strategy:
           1. Check for a local git repo and use `git pull --ff-only` when found
@@ -1179,11 +1582,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Switch to API-key mode",
         description=(
             "Switch Codex into API-key mode. By default this uses the legacy auth.json snapshot flow "
-            "and keeps the shared chat-history behavior. Pass --provider-mode to use the optional "
-            "env-driven provider block instead. By default this command does not prompt for an API key."
+            "and keeps the shared chat-history behavior. API groups let you save multiple base URLs, "
+            "API keys, and auth snapshots. Pass --provider-mode to use the optional env-driven provider "
+            "block instead. By default this command does not prompt for an API key."
         ),
     )
+    api_parser.add_argument("--group", help="Operate on or switch to one saved API group")
     api_parser.add_argument("--base-url")
+    api_parser.add_argument("--env-var", help="Preferred environment variable name for this API group")
     api_parser.add_argument(
         "--provider-mode",
         action="store_true",
@@ -1201,6 +1607,12 @@ def build_parser() -> argparse.ArgumentParser:
     api_key_group.add_argument("--set-key", metavar="KEY", help="Save a helper-managed XAI_API_KEY value")
     api_key_group.add_argument("--prompt-key", action="store_true", help="Prompt securely for an XAI_API_KEY value and save it")
     api_key_group.add_argument("--clear-key", action="store_true", help="Clear the selected helper-managed XAI_API_KEY value")
+    api_parser.add_argument("--list-groups", action="store_true", help="List saved API groups")
+    api_parser.add_argument("--save-group", action="store_true", help="Save group metadata such as --base-url and --env-var without switching")
+    api_parser.add_argument("--set-default-group", metavar="GROUP", help="Set the default API group used by `codex-mode api`")
+    api_parser.add_argument("--remove-group", metavar="GROUP", help="Remove one saved API group and its managed files")
+    api_parser.add_argument("--show-auth-file", action="store_true", help="Print the managed auth snapshot path for the selected group")
+    api_parser.add_argument("--import-auth", metavar="PATH", help="Import a user-managed auth.json file into the selected group")
     api_parser.add_argument(
         "--store",
         choices=["auto", "keychain", "file"],
@@ -1257,11 +1669,13 @@ def main(argv: list[str]) -> int:
         elif args.command == "chatgpt":
             switch_or_relogin_chatgpt(paths, codex_bin, relogin=args.relogin)
         elif args.command == "api":
-            if handle_api_key_management(paths, args):
+            group_name = resolve_api_group_name(paths, getattr(args, "group", None))
+            if handle_api_group_management(paths, args, group_name):
                 return 0
             switch_or_relogin_api(
                 paths,
                 codex_bin,
+                group_name=group_name,
                 base_url=args.base_url,
                 relogin=args.relogin,
                 prompt_for_key=args.prompt,
