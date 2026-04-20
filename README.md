@@ -84,6 +84,9 @@ python3 ./release.py show
 python3 ./release.py prepare 0.1.1
 python3 ./release.py package
 python3 ./release.py release 0.1.1
+python3 ./release.py tag
+python3 ./release.py github --draft
+python3 ./release.py publish 0.1.1 --draft
 ```
 
 What it does:
@@ -92,6 +95,9 @@ What it does:
 - `prepare <version>`: updates `VERSION` and moves the current `## Unreleased` section into `## <version> - <today>`
 - `package`: creates `dist/codex-mode-v<version>.zip`
 - `release <version>`: runs `prepare` and `package` together
+- `tag`: creates an annotated git tag like `v0.1.1`
+- `github`: uses `gh release create` to publish a GitHub release from the current version and archive
+- `publish <version>`: runs `prepare`, `package`, `tag`, and `github` together
 
 Examples:
 
@@ -127,6 +133,9 @@ python3 ./release.py show
 python3 ./release.py prepare 0.1.1
 python3 ./release.py package
 python3 ./release.py release 0.1.1
+python3 ./release.py tag
+python3 ./release.py github --draft
+python3 ./release.py publish 0.1.1 --draft
 ```
 
 Windows direct usage without install:
@@ -177,6 +186,7 @@ Notes:
   - use `codex-mode update --download` to allow a GitHub download and reinstall fallback
 - after installation on a new device, prefer `codex-mode update` over manually re-running `git pull` and `install.ps1` / `install.sh`
 - release packaging excludes `.git`, `__pycache__`, `dist`, `release`, and `*.pyc`
+- `release.py github` and `release.py publish` require `gh auth login` first
 
 ```powershell
 $env:CODEX_BIN = "C:\Path\To\codex.exe"

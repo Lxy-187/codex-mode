@@ -24,6 +24,7 @@
 - Changed legacy API snapshot handling so the current API group is tracked and restored per group instead of using one shared `api.auth.json`
 - Added top-level `--version` / `-v` support and install-time version file copying
 - Added `release.py` to manage `VERSION`, roll `CHANGELOG` releases forward, and generate zip archives under `dist/`
+- Extended `release.py` with git tag creation and GitHub Release publishing via `gh`
 
 ## 0.1.0 - 2026-04-19
 
