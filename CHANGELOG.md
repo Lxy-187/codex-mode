@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added multiple named ChatGPT groups with separate `auth.json` snapshots, default/current group tracking, and import/show management commands
 
 ## 0.1.1 - 2026-04-20
 

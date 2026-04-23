@@ -15,7 +15,12 @@ Features:
 - `status`: show a simple current-mode summary
 - `status --verbose`: show legacy snapshots, API groups, provider config, expected env keys, helper storage, shell env visibility, and GUI env visibility diagnostics
 - `chatgpt`: switch back to saved ChatGPT auth snapshot and remove the managed API provider block
-- `chatgpt --relogin`: run a fresh ChatGPT login and refresh the saved snapshot
+- `chatgpt --group NAME`: switch to one named ChatGPT group
+- `chatgpt --relogin`: run a fresh ChatGPT login and refresh the selected snapshot
+- `chatgpt --list-groups`: list saved ChatGPT groups
+- `chatgpt --set-default-group NAME`: choose which ChatGPT group `codex-mode chatgpt` uses by default
+- `chatgpt --show-auth-file`: print the managed auth snapshot path for one ChatGPT group
+- `chatgpt --import-auth PATH`: import a user-managed `auth.json` file into one ChatGPT group
 - `api`: switch to the default API group using the legacy `auth.json` snapshot flow and `openai_base_url`
 - `api --group NAME`: switch to one named API group
 - `api --relogin`: force a fresh API login and refresh the selected group's legacy API snapshot
@@ -46,6 +51,8 @@ Files managed under `~/.codex`:
 - `auth.json`
 - `config.toml`
 - `auth-profiles/chatgpt.auth.json`
+- `auth-profiles/chatgpt.groups.json`
+- `auth-profiles/chatgpt.<group>.auth.json`
 - `auth-profiles/api.auth.json`
 - `auth-profiles/api.base_url`
 - `auth-profiles/api.key`
@@ -109,7 +116,12 @@ Examples:
 ./codex-mode help api
 ./codex-mode help update
 ./codex-mode chatgpt
+./codex-mode chatgpt --group work
 ./codex-mode chatgpt --relogin
+./codex-mode chatgpt --group work --show-auth-file
+./codex-mode chatgpt --group work --import-auth ./auth.json
+./codex-mode chatgpt --list-groups
+./codex-mode chatgpt --set-default-group work
 ./codex-mode api --base-url https://api.xairouter.com
 ./codex-mode api --group work
 ./codex-mode api --relogin
@@ -142,6 +154,7 @@ Windows direct usage without install:
 
 ```powershell
 .\codex-mode.ps1 status
+.\\codex-mode.ps1 chatgpt --group work
 .\codex-mode.ps1 api --base-url https://api.xairouter.com
 .\\codex-mode.ps1 api --group work --base-url https://api.work.example/v1 --save-group
 .\codex-mode.ps1 api --provider-mode --base-url https://api.xairouter.com
@@ -156,6 +169,9 @@ codex-mode.cmd api --base-url https://api.xairouter.com
 Notes:
 
 - After switching modes in Codex App, fully quit and reopen the app.
+- `chatgpt` defaults to one managed ChatGPT group, and ChatGPT groups let you keep multiple ChatGPT `auth.json` snapshots side by side.
+- `chatgpt --show-auth-file` prints the exact managed snapshot path so you can inspect or manually edit one ChatGPT group's `auth.json`.
+- `chatgpt --import-auth PATH` lets you bring in a hand-managed ChatGPT `auth.json` instead of forcing `codex-mode` to generate it via `codex login`.
 - `chatgpt` restores a saved login snapshot. If that snapshot has expired, use `chatgpt --relogin`.
 - `api` defaults to the legacy `auth.json` snapshot flow. This is the mode that keeps shared chat history with the app.
 - API groups let you keep multiple `base_url`, helper-managed API keys, and legacy `auth.json` snapshots side by side.

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 KEYCHAIN_SERVICE = "codex-openai-api-key"
 DEFAULT_API_GROUP = "default"
+DEFAULT_CHATGPT_GROUP = "default"
 REPO_HINT_NAMES = ("codex-mode", "codex-mode-portable")
 SOURCE_MARKER = ".codex-mode-source"
 GITHUB_REPO = "Lxy-187/codex-mode"
@@ -64,6 +65,7 @@ class Paths:
     api_base_url_file: pathlib.Path
     api_key_file: pathlib.Path
     api_groups_file: pathlib.Path
+    chatgpt_groups_file: pathlib.Path
 
 
 @dataclass
@@ -94,6 +96,7 @@ def build_paths() -> Paths:
         api_base_url_file=codex_home / "auth-profiles" / "api.base_url",
         api_key_file=codex_home / "auth-profiles" / "api.key",
         api_groups_file=codex_home / "auth-profiles" / "api.groups.json",
+        chatgpt_groups_file=codex_home / "auth-profiles" / "chatgpt.groups.json",
     )
 
 
@@ -240,6 +243,176 @@ def api_group_key_file(paths: Paths, group_name: str) -> pathlib.Path:
     if group_name == DEFAULT_API_GROUP:
         return paths.api_key_file
     return paths.profile_dir / f"api.{group_name}.key"
+
+
+def default_chatgpt_groups_state() -> dict[str, object]:
+    return {
+        "version": 1,
+        "default_group": DEFAULT_CHATGPT_GROUP,
+        "current_group": DEFAULT_CHATGPT_GROUP,
+        "groups": {
+            DEFAULT_CHATGPT_GROUP: {},
+        },
+    }
+
+
+def load_chatgpt_groups_state(paths: Paths) -> dict[str, object]:
+    state = default_chatgpt_groups_state()
+    if not paths.chatgpt_groups_file.exists():
+        return state
+
+    try:
+        loaded = json.loads(paths.chatgpt_groups_file.read_text(encoding="utf-8"))
+    except Exception:
+        return state
+
+    groups = loaded.get("groups", {})
+    normalized_groups: dict[str, dict[str, str]] = {}
+    if isinstance(groups, dict):
+        for raw_name, raw_config in groups.items():
+            try:
+                name = normalize_group_name(str(raw_name))
+            except CodexModeError:
+                continue
+            normalized_groups[name] = raw_config if isinstance(raw_config, dict) else {}
+
+    if DEFAULT_CHATGPT_GROUP not in normalized_groups:
+        normalized_groups[DEFAULT_CHATGPT_GROUP] = {}
+
+    default_group = str(loaded.get("default_group", DEFAULT_CHATGPT_GROUP) or DEFAULT_CHATGPT_GROUP)
+    current_group = str(loaded.get("current_group", default_group) or default_group)
+
+    try:
+        default_group = normalize_group_name(default_group)
+    except CodexModeError:
+        default_group = DEFAULT_CHATGPT_GROUP
+    if default_group not in normalized_groups:
+        normalized_groups[default_group] = {}
+
+    try:
+        current_group = normalize_group_name(current_group)
+    except CodexModeError:
+        current_group = default_group
+    if current_group not in normalized_groups:
+        normalized_groups[current_group] = {}
+
+    state["default_group"] = default_group
+    state["current_group"] = current_group
+    state["groups"] = normalized_groups
+    return state
+
+
+def save_chatgpt_groups_state(paths: Paths, state: dict[str, object]) -> None:
+    paths.chatgpt_groups_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.chatgpt_groups_file.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def ensure_chatgpt_group_entry(state: dict[str, object], group_name: str) -> dict[str, str]:
+    groups = state.setdefault("groups", {})
+    assert isinstance(groups, dict)
+    entry = groups.get(group_name)
+    if not isinstance(entry, dict):
+        entry = {}
+        groups[group_name] = entry
+    return entry
+
+
+def resolve_chatgpt_group_name(paths: Paths, explicit_group: str | None) -> str:
+    if explicit_group:
+        return normalize_group_name(explicit_group)
+    state = load_chatgpt_groups_state(paths)
+    return normalize_group_name(str(state.get("default_group", DEFAULT_CHATGPT_GROUP) or DEFAULT_CHATGPT_GROUP))
+
+
+def chatgpt_group_auth_file(paths: Paths, group_name: str) -> pathlib.Path:
+    if group_name == DEFAULT_CHATGPT_GROUP:
+        return paths.chatgpt_auth_file
+    return paths.profile_dir / f"chatgpt.{group_name}.auth.json"
+
+
+def set_default_chatgpt_group(paths: Paths, group_name: str) -> None:
+    state = load_chatgpt_groups_state(paths)
+    ensure_chatgpt_group_entry(state, group_name)
+    state["default_group"] = group_name
+    if not str(state.get("current_group", "") or "").strip():
+        state["current_group"] = group_name
+    save_chatgpt_groups_state(paths, state)
+    print(f"Default ChatGPT group set to: {group_name}", flush=True)
+
+
+def set_current_chatgpt_group(paths: Paths, group_name: str) -> None:
+    state = load_chatgpt_groups_state(paths)
+    ensure_chatgpt_group_entry(state, group_name)
+    state["current_group"] = group_name
+    save_chatgpt_groups_state(paths, state)
+
+
+def list_chatgpt_groups(paths: Paths) -> None:
+    state = load_chatgpt_groups_state(paths)
+    default_group = normalize_group_name(str(state.get("default_group", DEFAULT_CHATGPT_GROUP) or DEFAULT_CHATGPT_GROUP))
+    current_group = normalize_group_name(str(state.get("current_group", default_group) or default_group))
+    groups = state.get("groups", {})
+    assert isinstance(groups, dict)
+
+    print("ChatGPT groups:", flush=True)
+    for group_name in sorted(groups):
+        markers: list[str] = []
+        if group_name == default_group:
+            markers.append("default")
+        if group_name == current_group:
+            markers.append("current")
+        marker_text = f" ({', '.join(markers)})" if markers else ""
+        auth_present = chatgpt_group_auth_file(paths, group_name).exists()
+        print(f"- {group_name}{marker_text}: auth_snapshot={'yes' if auth_present else 'no'}", flush=True)
+
+
+def remove_chatgpt_group(paths: Paths, group_name: str) -> None:
+    if group_name == DEFAULT_CHATGPT_GROUP:
+        raise CodexModeError("The default ChatGPT group cannot be removed.")
+
+    state = load_chatgpt_groups_state(paths)
+    groups = state.get("groups", {})
+    assert isinstance(groups, dict)
+    groups.pop(group_name, None)
+    if str(state.get("default_group", DEFAULT_CHATGPT_GROUP) or DEFAULT_CHATGPT_GROUP) == group_name:
+        state["default_group"] = DEFAULT_CHATGPT_GROUP
+    if str(state.get("current_group", DEFAULT_CHATGPT_GROUP) or DEFAULT_CHATGPT_GROUP) == group_name:
+        state["current_group"] = DEFAULT_CHATGPT_GROUP
+    save_chatgpt_groups_state(paths, state)
+
+    auth_path = chatgpt_group_auth_file(paths, group_name)
+    if auth_path.exists():
+        auth_path.unlink()
+
+    print(f"Removed ChatGPT group: {group_name}", flush=True)
+
+
+def show_chatgpt_auth_file(paths: Paths, group_name: str) -> None:
+    print(chatgpt_group_auth_file(paths, group_name), flush=True)
+
+
+def import_chatgpt_auth_file(paths: Paths, group_name: str, source: str) -> None:
+    source_path = pathlib.Path(source).expanduser().resolve()
+    require_file(source_path, f"Auth file not found: {source_path}")
+    try:
+        data = json.loads(source_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise CodexModeError(f"Could not parse auth file: {source_path}") from exc
+
+    auth_mode = str(data.get("auth_mode", "") or "")
+    if auth_mode != "chatgpt":
+        raise CodexModeError(
+            f"Imported auth file must have auth_mode='chatgpt', got '{auth_mode or 'unknown'}'."
+        )
+
+    target = chatgpt_group_auth_file(paths, group_name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, target)
+    state = load_chatgpt_groups_state(paths)
+    ensure_chatgpt_group_entry(state, group_name)
+    save_chatgpt_groups_state(paths, state)
+    print(f"Imported ChatGPT auth snapshot for group '{group_name}' from: {source_path}", flush=True)
+    print(f"Managed auth snapshot: {target}", flush=True)
 
 
 def detect_codex_bin() -> str:
@@ -559,7 +732,11 @@ def set_api_provider_config(config_file: pathlib.Path, base_url: str, env_var_na
 def save_current_snapshot(paths: Paths) -> None:
     current_mode = read_auth_mode(paths.auth_file)
     if current_mode == "chatgpt":
-        shutil.copy2(paths.auth_file, paths.chatgpt_auth_file)
+        state = load_chatgpt_groups_state(paths)
+        current_group = normalize_group_name(
+            str(state.get("current_group", state.get("default_group", DEFAULT_CHATGPT_GROUP)) or DEFAULT_CHATGPT_GROUP)
+        )
+        shutil.copy2(paths.auth_file, chatgpt_group_auth_file(paths, current_group))
     elif current_mode == "apikey":
         state = load_api_groups_state(paths)
         current_group = normalize_group_name(
@@ -759,6 +936,13 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
     groups_state = load_api_groups_state(paths)
     default_group = normalize_group_name(str(groups_state.get("default_group", DEFAULT_API_GROUP) or DEFAULT_API_GROUP))
     current_group = normalize_group_name(str(groups_state.get("current_group", default_group) or default_group))
+    chatgpt_groups_state = load_chatgpt_groups_state(paths)
+    default_chatgpt_group = normalize_group_name(
+        str(chatgpt_groups_state.get("default_group", DEFAULT_CHATGPT_GROUP) or DEFAULT_CHATGPT_GROUP)
+    )
+    current_chatgpt_group = normalize_group_name(
+        str(chatgpt_groups_state.get("current_group", default_chatgpt_group) or default_chatgpt_group)
+    )
     auth_mode = read_auth_mode(paths.auth_file)
     api_mode_active = api_provider_config_is_active(paths.config_file)
     config_base_url = read_openai_base_url(paths.config_file)
@@ -774,7 +958,7 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
     elif auth_mode == "apikey":
         print(f"Current mode: legacy API auth (group: {current_group})", flush=True)
     elif auth_mode == "chatgpt":
-        print("Current mode: ChatGPT", flush=True)
+        print(f"Current mode: ChatGPT (group: {current_chatgpt_group})", flush=True)
     elif auth_mode:
         print(f"Current mode: {auth_mode}", flush=True)
     else:
@@ -786,7 +970,12 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
     if verbose:
         print(f"Codex home: {paths.codex_home}", flush=True)
         print(f"Auth file: {'present' if paths.auth_file.exists() else 'missing'}", flush=True)
-        print(f"Saved ChatGPT snapshot: {'present' if paths.chatgpt_auth_file.exists() else 'missing'}", flush=True)
+        print(f"Default ChatGPT group: {default_chatgpt_group}", flush=True)
+        print(f"Current ChatGPT group: {current_chatgpt_group}", flush=True)
+        print(
+            f"Saved ChatGPT snapshot: {'present' if chatgpt_group_auth_file(paths, current_chatgpt_group).exists() else 'missing'}",
+            flush=True,
+        )
         print(f"Default API group: {default_group}", flush=True)
         print(f"Current API group: {current_group}", flush=True)
         print(
@@ -854,6 +1043,20 @@ def print_status(paths: Paths, codex_bin: str, *, verbose: bool) -> None:
                 f"Note: a local helper key exists, but GUI apps still cannot read {api_key.env_var_name} from launchctl.",
                 flush=True,
             )
+
+        print("", flush=True)
+        print("Configured ChatGPT groups:", flush=True)
+        chatgpt_groups = chatgpt_groups_state.get("groups", {})
+        assert isinstance(chatgpt_groups, dict)
+        for group_name in sorted(chatgpt_groups):
+            markers: list[str] = []
+            if group_name == default_chatgpt_group:
+                markers.append("default")
+            if group_name == current_chatgpt_group:
+                markers.append("current")
+            marker_text = f" ({', '.join(markers)})" if markers else ""
+            auth_present = chatgpt_group_auth_file(paths, group_name).exists()
+            print(f"  {group_name}{marker_text}: auth_snapshot={'yes' if auth_present else 'no'}", flush=True)
 
         print("", flush=True)
         print("Configured API groups:", flush=True)
@@ -1114,28 +1317,59 @@ def handle_api_group_management(paths: Paths, args: argparse.Namespace, group_na
     return did_work
 
 
-def switch_chatgpt(paths: Paths, codex_bin: str) -> None:
+def handle_chatgpt_group_management(paths: Paths, args: argparse.Namespace, group_name: str) -> bool:
+    did_work = False
+
+    if args.list_groups:
+        list_chatgpt_groups(paths)
+        return True
+
+    if args.remove_group is not None:
+        remove_chatgpt_group(paths, normalize_group_name(args.remove_group))
+        did_work = True
+
+    if args.set_default_group is not None:
+        set_default_chatgpt_group(paths, normalize_group_name(args.set_default_group))
+        did_work = True
+
+    if args.import_auth is not None:
+        import_chatgpt_auth_file(paths, group_name, args.import_auth)
+        did_work = True
+
+    if args.show_auth_file:
+        show_chatgpt_auth_file(paths, group_name)
+        did_work = True
+
+    return did_work
+
+
+def switch_chatgpt(paths: Paths, codex_bin: str, *, group_name: str) -> None:
     ensure_profile_dir(paths)
-    if not paths.auth_file.exists() and not paths.chatgpt_auth_file.exists():
+    group_auth_file = chatgpt_group_auth_file(paths, group_name)
+    if not paths.auth_file.exists() and not group_auth_file.exists():
         raise CodexModeError("No Codex auth state found. Run `codex login` first.")
 
     save_current_snapshot(paths)
-    require_file(paths.chatgpt_auth_file, "No saved ChatGPT session snapshot found. Use `chatgpt --relogin`.")
+    require_file(
+        group_auth_file,
+        f"No saved ChatGPT session snapshot found for group '{group_name}'. Use `chatgpt --group {group_name} --relogin`.",
+    )
 
-    shutil.copy2(paths.chatgpt_auth_file, paths.auth_file)
+    shutil.copy2(group_auth_file, paths.auth_file)
+    set_current_chatgpt_group(paths, group_name)
     remove_api_provider_config(paths.config_file)
     remove_openai_base_url(paths.config_file)
 
-    print("Switched Codex to ChatGPT billing mode.", flush=True)
+    print(f"Switched Codex to ChatGPT billing mode: {group_name}", flush=True)
     print("If Codex App is open, fully quit and reopen it.", flush=True)
     codex_login_status(codex_bin)
 
 
-def switch_or_relogin_chatgpt(paths: Paths, codex_bin: str, *, relogin: bool) -> None:
+def switch_or_relogin_chatgpt(paths: Paths, codex_bin: str, *, group_name: str, relogin: bool) -> None:
     if relogin:
-        relogin_chatgpt(paths, codex_bin)
+        relogin_chatgpt(paths, codex_bin, group_name=group_name)
     else:
-        switch_chatgpt(paths, codex_bin)
+        switch_chatgpt(paths, codex_bin, group_name=group_name)
 
 
 def switch_api(
@@ -1315,7 +1549,7 @@ def switch_or_relogin_api(
     )
 
 
-def relogin_chatgpt(paths: Paths, codex_bin: str) -> None:
+def relogin_chatgpt(paths: Paths, codex_bin: str, *, group_name: str) -> None:
     ensure_profile_dir(paths)
     remove_api_provider_config(paths.config_file)
     remove_openai_base_url(paths.config_file)
@@ -1327,8 +1561,11 @@ def relogin_chatgpt(paths: Paths, codex_bin: str) -> None:
             f"Login completed, but the saved auth mode is '{auth_mode or 'unknown'}', not 'chatgpt'."
         )
 
-    shutil.copy2(paths.auth_file, paths.chatgpt_auth_file)
-    print("Refreshed ChatGPT login snapshot.", flush=True)
+    target_file = chatgpt_group_auth_file(paths, group_name)
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(paths.auth_file, target_file)
+    set_current_chatgpt_group(paths, group_name)
+    print(f"Refreshed ChatGPT login snapshot: {group_name}", flush=True)
     print("If Codex App is open, fully quit and reopen it.", flush=True)
     codex_login_status(codex_bin)
 
@@ -1525,7 +1762,12 @@ def build_parser() -> argparse.ArgumentParser:
           codex-mode status
           codex-mode status --verbose
           codex-mode chatgpt
+          codex-mode chatgpt --group work
           codex-mode chatgpt --relogin
+          codex-mode chatgpt --group work --show-auth-file
+          codex-mode chatgpt --group work --import-auth ./auth.json
+          codex-mode chatgpt --list-groups
+          codex-mode chatgpt --set-default-group work
           codex-mode api --base-url https://api.xairouter.com
           codex-mode api --group work
           codex-mode api --relogin
@@ -1549,10 +1791,12 @@ def build_parser() -> argparse.ArgumentParser:
           Windows/Linux: managed file -> XAI_API_KEY -> interactive prompt
 
         API switching strategy:
-          1. `codex-mode api` defaults to the default API group and the legacy auth.json snapshot flow
-          2. `codex-mode api --group NAME` switches to one specific saved API group
-          3. `codex-mode api --provider-mode` uses the optional env-driven `model_provider = "xai"` config
-          4. `codex-mode chatgpt` restores the saved ChatGPT snapshot and removes API-only config
+          1. `codex-mode chatgpt` defaults to the default ChatGPT group
+          2. `codex-mode chatgpt --group NAME` switches to one specific saved ChatGPT group
+          3. `codex-mode api` defaults to the default API group and the legacy auth.json snapshot flow
+          4. `codex-mode api --group NAME` switches to one specific saved API group
+          5. `codex-mode api --provider-mode` uses the optional env-driven `model_provider = "xai"` config
+          6. `codex-mode chatgpt` restores the saved ChatGPT snapshot and removes API-only config
 
         Update strategy:
           1. Check for a local git repo and use `git pull --ff-only` when found
@@ -1586,14 +1830,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Switch to the saved ChatGPT login snapshot",
         description=(
             "Restore the saved ChatGPT auth snapshot and remove the managed API provider config block. "
-            "Use --relogin to run a fresh `codex login` and refresh the saved snapshot."
+            "ChatGPT groups let you keep multiple ChatGPT auth.json snapshots side by side. "
+            "Use --relogin to run a fresh `codex login` and refresh the selected snapshot."
         ),
     )
+    chatgpt_parser.add_argument("--group", help="Operate on or switch to one saved ChatGPT group")
     chatgpt_parser.add_argument(
         "--relogin",
         action="store_true",
         help="Run a fresh ChatGPT login and refresh the saved snapshot before switching",
     )
+    chatgpt_parser.add_argument("--list-groups", action="store_true", help="List saved ChatGPT groups")
+    chatgpt_parser.add_argument("--set-default-group", metavar="GROUP", help="Set the default ChatGPT group")
+    chatgpt_parser.add_argument("--remove-group", metavar="GROUP", help="Remove one saved ChatGPT group and its managed files")
+    chatgpt_parser.add_argument("--show-auth-file", action="store_true", help="Print the managed auth snapshot path for the selected ChatGPT group")
+    chatgpt_parser.add_argument("--import-auth", metavar="PATH", help="Import a user-managed auth.json file into the selected ChatGPT group")
 
     api_parser = sub.add_parser(
         "api",
@@ -1685,7 +1936,10 @@ def main(argv: list[str]) -> int:
         if args.command in (None, "status"):
             print_status(paths, codex_bin, verbose=getattr(args, "verbose", False))
         elif args.command == "chatgpt":
-            switch_or_relogin_chatgpt(paths, codex_bin, relogin=args.relogin)
+            group_name = resolve_chatgpt_group_name(paths, getattr(args, "group", None))
+            if handle_chatgpt_group_management(paths, args, group_name):
+                return 0
+            switch_or_relogin_chatgpt(paths, codex_bin, group_name=group_name, relogin=args.relogin)
         elif args.command == "api":
             group_name = resolve_api_group_name(paths, getattr(args, "group", None))
             if handle_api_group_management(paths, args, group_name):
