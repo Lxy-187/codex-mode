@@ -17,6 +17,7 @@ Features:
 - `chatgpt`: switch back to saved ChatGPT auth snapshot and remove the managed API provider block
 - `chatgpt --group NAME`: switch to one named ChatGPT group
 - `chatgpt --relogin`: run a fresh ChatGPT login and refresh the selected snapshot
+- `chatgpt --relogin --device-auth`: refresh the selected ChatGPT snapshot using `codex login --device-auth`
 - `chatgpt --list-groups`: list saved ChatGPT groups
 - `chatgpt --set-default-group NAME`: choose which ChatGPT group `codex-mode chatgpt` uses by default
 - `chatgpt --show-auth-file`: print the managed auth snapshot path for one ChatGPT group
@@ -118,6 +119,7 @@ Examples:
 ./codex-mode chatgpt
 ./codex-mode chatgpt --group work
 ./codex-mode chatgpt --relogin
+./codex-mode chatgpt --group work --relogin --device-auth
 ./codex-mode chatgpt --group work --show-auth-file
 ./codex-mode chatgpt --group work --import-auth ./auth.json
 ./codex-mode chatgpt --list-groups

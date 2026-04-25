@@ -1365,9 +1365,18 @@ def switch_chatgpt(paths: Paths, codex_bin: str, *, group_name: str) -> None:
     codex_login_status(codex_bin)
 
 
-def switch_or_relogin_chatgpt(paths: Paths, codex_bin: str, *, group_name: str, relogin: bool) -> None:
+def switch_or_relogin_chatgpt(
+    paths: Paths,
+    codex_bin: str,
+    *,
+    group_name: str,
+    relogin: bool,
+    device_auth: bool,
+) -> None:
+    if device_auth and not relogin:
+        raise CodexModeError("`--device-auth` only applies when `--relogin` is also passed.")
     if relogin:
-        relogin_chatgpt(paths, codex_bin, group_name=group_name)
+        relogin_chatgpt(paths, codex_bin, group_name=group_name, device_auth=device_auth)
     else:
         switch_chatgpt(paths, codex_bin, group_name=group_name)
 
@@ -1549,11 +1558,14 @@ def switch_or_relogin_api(
     )
 
 
-def relogin_chatgpt(paths: Paths, codex_bin: str, *, group_name: str) -> None:
+def relogin_chatgpt(paths: Paths, codex_bin: str, *, group_name: str, device_auth: bool) -> None:
     ensure_profile_dir(paths)
     remove_api_provider_config(paths.config_file)
     remove_openai_base_url(paths.config_file)
-    run_codex(codex_bin, ["login"])
+    login_args = ["login"]
+    if device_auth:
+        login_args.append("--device-auth")
+    run_codex(codex_bin, login_args)
 
     auth_mode = read_auth_mode(paths.auth_file)
     if auth_mode != "chatgpt":
@@ -1840,6 +1852,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run a fresh ChatGPT login and refresh the saved snapshot before switching",
     )
+    chatgpt_parser.add_argument(
+        "--device-auth",
+        action="store_true",
+        help="Use `codex login --device-auth` when refreshing a ChatGPT login snapshot",
+    )
     chatgpt_parser.add_argument("--list-groups", action="store_true", help="List saved ChatGPT groups")
     chatgpt_parser.add_argument("--set-default-group", metavar="GROUP", help="Set the default ChatGPT group")
     chatgpt_parser.add_argument("--remove-group", metavar="GROUP", help="Remove one saved ChatGPT group and its managed files")
@@ -1939,7 +1956,13 @@ def main(argv: list[str]) -> int:
             group_name = resolve_chatgpt_group_name(paths, getattr(args, "group", None))
             if handle_chatgpt_group_management(paths, args, group_name):
                 return 0
-            switch_or_relogin_chatgpt(paths, codex_bin, group_name=group_name, relogin=args.relogin)
+            switch_or_relogin_chatgpt(
+                paths,
+                codex_bin,
+                group_name=group_name,
+                relogin=args.relogin,
+                device_auth=args.device_auth,
+            )
         elif args.command == "api":
             group_name = resolve_api_group_name(paths, getattr(args, "group", None))
             if handle_api_group_management(paths, args, group_name):

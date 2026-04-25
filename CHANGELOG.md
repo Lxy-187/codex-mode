@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added multiple named ChatGPT groups with separate `auth.json` snapshots, default/current group tracking, and import/show management commands
+- Added `chatgpt --relogin --device-auth` to refresh ChatGPT snapshots through `codex login --device-auth`
 
 ## 0.1.1 - 2026-04-20
 
